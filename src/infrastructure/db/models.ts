@@ -164,7 +164,9 @@ renewalSchema.index({ status: 1, nextRetryAt: 1 });
 const inviteSchema = new Schema(
   {
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    paymentId: { type: Schema.Types.ObjectId, ref: 'Payment', required: true },
     subscriptionId: { type: Schema.Types.ObjectId, ref: 'Subscription', required: true },
+    channelId: { type: String, required: true, index: true },
     expectedTelegramId: { type: Number, required: true },
     inviteLink: { type: String, required: true },
     telegramInviteName: { type: String, required: true, index: true },
@@ -175,6 +177,7 @@ const inviteSchema = new Schema(
   opts,
 );
 inviteSchema.index({ userId: 1, createdAt: -1 });
+inviteSchema.index({ inviteLink: 1, channelId: 1 }, { unique: true });
 const lockSchema = new Schema(
   {
     _id: { type: String, required: true },

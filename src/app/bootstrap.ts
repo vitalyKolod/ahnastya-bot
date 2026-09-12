@@ -81,7 +81,7 @@ async function main() {
     purchaseIntents,
     logger,
   );
-  const http = createHttpServer(env, payments, api, logger);
+  const http = createHttpServer(env, payments, channel, api, logger);
   const scheduler = new SchedulerService(
     env,
     plans,
@@ -93,6 +93,7 @@ async function main() {
     http.deliverPaymentResult,
   );
   await http.listen({ port: env.PORT, host: '0.0.0.0' });
+  await channel.checkPermissions();
   scheduler.start();
   void bot.start({
     allowed_updates: ['message', 'callback_query', 'chat_join_request'],

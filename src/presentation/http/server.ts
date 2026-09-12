@@ -8,6 +8,7 @@ import type {
   PaymentUiTarget,
   ProcessPaymentResult,
 } from '../../application/payment.service.js';
+import type { ChannelAccessService } from '../../application/channel-access.service.js';
 import type { Env } from '../../config/env.js';
 import { ru } from '../../content/ru.js';
 import { formatUserDate } from '../../shared/date.js';
@@ -53,7 +54,13 @@ export function isTransientTelegramError(error: unknown): boolean {
   );
 }
 
-export function createHttpServer(env: Env, payments: PaymentService, api: Api, logger: Logger) {
+export function createHttpServer(
+  env: Env,
+  payments: PaymentService,
+  channel: ChannelAccessService,
+  api: Api,
+  logger: Logger,
+) {
   const app = Fastify({
     loggerInstance: logger,
     bodyLimit: 64 * 1024,
@@ -136,10 +143,8 @@ export function createHttpServer(env: Env, payments: PaymentService, api: Api, l
     async (req, reply) => {
       const context = { requestId: req.id, ...webhookLogContext(req.body) };
       logger.info({ event: 'yookassa.webhook.received', ...context });
-      if ('paymentId' in context)
-        logger.info({ event: 'yookassa.webhook.payment_id', ...context });
-      if ('webhookEvent' in context)
-        logger.info({ event: 'yookassa.webhook.event', ...context });
+      if ('paymentId' in context) logger.info({ event: 'yookassa.webhook.payment_id', ...context });
+      if ('webhookEvent' in context) logger.info({ event: 'yookassa.webhook.event', ...context });
       try {
         const result = await payments.handleWebhook(req.body);
         if ('notification' in result && result.notification && result.notificationKey)
@@ -248,9 +253,11 @@ export function createHttpServer(env: Env, payments: PaymentService, api: Api, l
               deleteError,
             });
           }
-      }
-      const successText = `✅ <b>Оплата успешно прошла!</b>\n\n🖇️ Тариф: ${escapeHtml(n.planTitle)}\n💳 Оплачено: ${minorToRub(n.amountMinor)}\n${n.lifetime ? '♾️ Доступ без ограничения срока' : `📅 Доступ до: ${date}\n🔄 Автопродление: ${n.autoRenew ? 'включено' : 'выключено'}`}\n\nДобро пожаловать в кладовую контента ❤️\n\n${ru.accessReady}`;
-      const accessKeyboard = new InlineKeyboard().text('❤️ ВСТУПИТЬ В КАНАЛ', 'invite');
+        }
+      const inviteLink = await channel.issueInvite(n.telegramId, providerPaymentId);
+      const successText = `✅ <b>Оплата успешно прошла!</b>\n\n🖇️ Тариф: ${escapeHtml(n.planTitle)}\n💳 Оплачено: ${minorToRub(n.amountMinor)}\n${n.lifetime ? '♾️ Доступ без ограничения срока' : `📅 Доступ до: ${date}\n🔄 Автопродление: ${n.autoRenew ? 'включено' : 'выключено'}`}\n\nДобро пожаловать в кладовую контента ❤️\n\n${inviteLink ? ru.accessReady : '✅ Доступ к каналу уже подтверждён.'}`;
+      const accessKeyboard = new InlineKeyboard();
+      if (inviteLink) accessKeyboard.url('❤️ ВСТУПИТЬ В КАНАЛ', inviteLink);
       if (!delivery?.successUiSentAt) {
         logger.info({ event: 'channel.access.started', ...logContext });
         if (n.processingUiMessageId) {
@@ -305,7 +312,10 @@ export function createHttpServer(env: Env, payments: PaymentService, api: Api, l
     } catch (error) {
       if (isTransientTelegramError(error)) {
         logger.warn({ event: 'telegram.notification.transient_failed', ...logContext, err: error });
-        const nextAttemptAt = await payments.scheduleSuccessNotificationRetry(notificationKey, error);
+        const nextAttemptAt = await payments.scheduleSuccessNotificationRetry(
+          notificationKey,
+          error,
+        );
         logger.info({
           event: 'telegram.notification.retry_scheduled',
           ...logContext,

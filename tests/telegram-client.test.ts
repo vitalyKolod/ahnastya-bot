@@ -4,6 +4,7 @@ import { loadEnv } from '../src/config/env.js';
 import { createTelegramClientOptions } from '../src/infrastructure/telegram/client.js';
 import { createHttpServer } from '../src/presentation/http/server.js';
 import type { PaymentService } from '../src/application/payment.service.js';
+import type { ChannelAccessService } from '../src/application/channel-access.service.js';
 import pino from 'pino';
 
 const BOT_TOKEN = '1234567890:abcdefghijklmnopqrstuvwxyzABCDE';
@@ -120,6 +121,9 @@ describe('Telegram API client', () => {
     const app = createHttpServer(
       env,
       payments as unknown as PaymentService,
+      {
+        issueInvite: vi.fn().mockResolvedValue('https://t.me/+personal-invite'),
+      } as unknown as ChannelAccessService,
       bot.api,
       pino({ level: 'silent' }),
     );

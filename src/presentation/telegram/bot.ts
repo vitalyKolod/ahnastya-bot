@@ -382,6 +382,14 @@ export function createBot(
   bot.callbackQuery('invite', async (ctx) => {
     await channel.restoreEligibility(ctx.from.id);
     const link = await channel.issueInvite(ctx.from.id);
+    if (!link) {
+      await render(
+        ctx,
+        '✅ Доступ к каналу уже подтверждён.',
+        new InlineKeyboard().text('← Назад', 'subscription'),
+      );
+      return;
+    }
     await render(
       ctx,
       'Персональная ссылка действует ограниченное время:',

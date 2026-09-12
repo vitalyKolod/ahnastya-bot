@@ -3,6 +3,7 @@ import type { Api } from 'grammy';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadEnv } from '../src/config/env.js';
 import type { PaymentService } from '../src/application/payment.service.js';
+import type { ChannelAccessService } from '../src/application/channel-access.service.js';
 import { createHttpServer } from '../src/presentation/http/server.js';
 import { ValidationError } from '../src/shared/errors.js';
 
@@ -75,13 +76,17 @@ function harness(
     deleteMessage: vi.fn().mockResolvedValue(true),
     ...apiOverrides,
   };
+  const channel = {
+    issueInvite: vi.fn().mockResolvedValue('https://t.me/+personal-invite'),
+  };
   const app = createHttpServer(
     env,
     payments as unknown as PaymentService,
+    channel as unknown as ChannelAccessService,
     api as unknown as Api,
     pino({ level: 'silent' }),
   );
-  return { app, payments, api };
+  return { app, payments, channel, api };
 }
 
 describe('payment return UX', () => {
@@ -166,6 +171,10 @@ describe('payment return UX', () => {
       expect.stringContaining('Оплата успешно прошла'),
       expect.objectContaining({ parse_mode: 'HTML' }),
     );
+    expect(h.channel.issueInvite).toHaveBeenCalledWith(42, 'provider-1');
+    expect(JSON.stringify(h.api.sendMessage.mock.calls[0]![2])).toContain(
+      'https://t.me/+personal-invite',
+    );
     expect(
       h.api.sendMessage.mock.calls.some((call) =>
         String(call[1]).includes('Оплата успешно прошла'),
@@ -206,16 +215,31 @@ describe('payment return UX', () => {
   });
 
   it('keeps a transient Telegram failure pending, retries, and ignores a duplicate webhook', async () => {
-    const delivery = { successUiSentAt: undefined as Date | undefined, accessNotificationSentAt: undefined as Date | undefined };
-    const notification = { ...success, processingUiMessageId: 0, purchaseIntentId: 'intent-1', planCode: 'month' };
+    const delivery = {
+      successUiSentAt: undefined as Date | undefined,
+      accessNotificationSentAt: undefined as Date | undefined,
+    };
+    const notification = {
+      ...success,
+      processingUiMessageId: 0,
+      purchaseIntentId: 'intent-1',
+      planCode: 'month',
+    };
     const h = harness(
       {
         handleWebhook: vi.fn().mockResolvedValue({
-          handled: true, providerPaymentId: 'provider-1', notification, notificationKey: 'key',
+          handled: true,
+          providerPaymentId: 'provider-1',
+          notification,
+          notificationKey: 'key',
         }),
         getUiDeliveryState: vi.fn().mockImplementation(() => Promise.resolve({ ...delivery })),
-        markSuccessUiSent: vi.fn().mockImplementation(() => { delivery.successUiSentAt = new Date(); }),
-        markAccessNotificationSent: vi.fn().mockImplementation(() => { delivery.accessNotificationSentAt = new Date(); }),
+        markSuccessUiSent: vi.fn().mockImplementation(() => {
+          delivery.successUiSentAt = new Date();
+        }),
+        markAccessNotificationSent: vi.fn().mockImplementation(() => {
+          delivery.accessNotificationSentAt = new Date();
+        }),
       },
       {
         sendMessage: vi
@@ -231,11 +255,16 @@ describe('payment return UX', () => {
       payload: { event: 'payment.succeeded', object: { id: 'provider-1' } },
     };
     await h.app.inject(request);
-    expect(h.payments.scheduleSuccessNotificationRetry).toHaveBeenCalledWith('key', expect.any(Error));
+    expect(h.payments.scheduleSuccessNotificationRetry).toHaveBeenCalledWith(
+      'key',
+      expect.any(Error),
+    );
     expect(h.payments.markSuccessNotificationSent).not.toHaveBeenCalled();
 
     await h.app.deliverPaymentResult('provider-1', {
-      status: 'succeeded', notification, notificationKey: 'key',
+      status: 'succeeded',
+      notification,
+      notificationKey: 'key',
     });
     expect(h.payments.markSuccessNotificationSent).toHaveBeenCalledWith('key');
     await h.app.inject(request);
