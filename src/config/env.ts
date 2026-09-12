@@ -10,6 +10,14 @@ const schema = z.object({
   APP_BASE_URL: z.string().url(),
   BUSINESS_TIMEZONE: z.string().default('Europe/Moscow'),
   BOT_TOKEN: z.string().min(20),
+  TELEGRAM_API_ROOT: z
+    .string()
+    .optional()
+    .transform((v) => v || undefined),
+  TELEGRAM_PROXY_SECRET: z
+    .string()
+    .optional()
+    .transform((v) => v || undefined),
   BOT_USERNAME: z
     .string()
     .min(3)
@@ -35,8 +43,16 @@ const schema = z.object({
   PLAN_MONTH_AMOUNT_RUB: z.string().regex(/^\d+(\.\d{1,2})?$/),
   PLAN_THREE_MONTH_AMOUNT_RUB: z.string().regex(/^\d+(\.\d{1,2})?$/),
   PLAN_LIFETIME_AMOUNT_RUB: z.string().regex(/^\d+(\.\d{1,2})?$/),
-  CONSULTATION_URL: z.string().url().optional().or(z.literal('')).transform((v) => v || undefined),
-  HOW_IT_LOOKS_MEDIA_FILE_ID: z.string().optional().transform((v) => v || undefined),
+  CONSULTATION_URL: z
+    .string()
+    .url()
+    .optional()
+    .or(z.literal(''))
+    .transform((v) => v || undefined),
+  HOW_IT_LOOKS_MEDIA_FILE_ID: z
+    .string()
+    .optional()
+    .transform((v) => v || undefined),
   CLAIM_TOKEN_TTL_MINUTES: z.coerce.number().int().positive().default(60),
   INVITE_TTL_MINUTES: z.coerce.number().int().positive().default(30),
   INVITE_RATE_LIMIT_MINUTES: z.coerce.number().int().positive().default(5),
@@ -59,13 +75,41 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   if (!result.success)
     throw new Error(`Invalid environment configuration:\n${z.prettifyError(result.error)}`);
   const env = result.data;
-  const appHost = new URL(env.APP_BASE_URL).hostname.toLowerCase();
-  if (
-    env.NODE_ENV === 'production' &&
-    (appHost === 'example.com' || appHost.endsWith('.example.com'))
-  )
+  if (Boolean(env.TELEGRAM_API_ROOT) !== Boolean(env.TELEGRAM_PROXY_SECRET))
     throw new Error(
-      'Invalid environment configuration: APP_BASE_URL must not use example.com in production',
+      'Invalid environment configuration: TELEGRAM_API_ROOT and TELEGRAM_PROXY_SECRET must be set together',
     );
+  if (env.TELEGRAM_API_ROOT) {
+    const telegramApiRoot = new URL(env.TELEGRAM_API_ROOT);
+    if (
+      telegramApiRoot.protocol !== 'https:' ||
+      telegramApiRoot.pathname !== '/' ||
+      telegramApiRoot.search ||
+      telegramApiRoot.hash ||
+      telegramApiRoot.username ||
+      telegramApiRoot.password
+    )
+      throw new Error(
+        'Invalid environment configuration: TELEGRAM_API_ROOT must be an HTTPS origin without a path, query, credentials, or hash',
+      );
+    env.TELEGRAM_API_ROOT = telegramApiRoot.origin;
+  }
+  const appUrl = new URL(env.APP_BASE_URL);
+  if (appUrl.pathname !== '/' || appUrl.search || appUrl.hash || appUrl.username || appUrl.password)
+    throw new Error(
+      'Invalid environment configuration: APP_BASE_URL must be an origin without a path, query, credentials, or hash',
+    );
+  if (env.NODE_ENV === 'production') {
+    if (appUrl.protocol !== 'https:')
+      throw new Error(
+        'Invalid environment configuration: APP_BASE_URL must use HTTPS in production',
+      );
+    if (appUrl.origin !== 'https://pay.kladovaya-content.ru')
+      throw new Error(
+        'Invalid environment configuration: production APP_BASE_URL must be https://pay.kladovaya-content.ru',
+      );
+  }
+  // Keep one canonical meaning throughout runtime: the public application origin.
+  env.APP_BASE_URL = appUrl.origin;
   return env;
 }

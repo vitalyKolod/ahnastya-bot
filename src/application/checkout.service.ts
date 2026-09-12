@@ -6,6 +6,7 @@ import {
   CheckoutModel,
   PaymentModel,
   PaymentReturnSessionModel,
+  PurchaseIntentModel,
   SubscriptionModel,
   UserModel,
 } from '../infrastructure/db/models.js';
@@ -113,6 +114,18 @@ export class CheckoutService {
       status: 'pending',
     });
     try {
+      const [user, purchaseIntent] = await Promise.all([
+        UserModel.findById(userId).select({ telegramId: 1 }).lean(),
+        PurchaseIntentModel.findOne({
+          userId,
+          planId,
+          status: { $in: ['browsing', 'payment_created'] },
+        })
+          .sort({ createdAt: -1 })
+          .select({ _id: 1 })
+          .lean(),
+      ]);
+      if (!user) throw new NotFoundError('Payment user not found');
       const returnToken = newToken();
       await PaymentReturnSessionModel.create({
         paymentId: payment._id,
@@ -130,10 +143,14 @@ export class CheckoutService {
         returnUrl: returnUrl.toString(),
         savePaymentMethod: plan.autoRenewSupported,
         metadata: {
+          paymentId: internalId,
           checkoutSessionId: String(checkout._id),
           planId,
+          planCode: planId,
           internalPaymentId: internalId,
           userId: String(userId),
+          telegramId: String(user.telegramId),
+          ...(purchaseIntent ? { purchaseIntentId: String(purchaseIntent._id) } : {}),
         },
       });
       await PaymentModel.updateOne(

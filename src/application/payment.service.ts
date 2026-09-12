@@ -33,6 +33,8 @@ export type ProcessPaymentResult =
       notification?: {
         subscriptionId: mongoose.Types.ObjectId;
         telegramId: number;
+        planCode?: string;
+        purchaseIntentId?: string;
         planTitle: string;
         amountMinor: number;
         currentPeriodEnd: Date | null;
@@ -45,6 +47,11 @@ export type ProcessPaymentResult =
 export interface PaymentUiTarget {
   telegramId: number;
   processingUiMessageId?: number;
+}
+export interface PendingSuccessNotification {
+  providerPaymentId: string;
+  notificationKey: string;
+  notification: NonNullable<Extract<ProcessPaymentResult, { status: 'succeeded' }>['notification']>;
 }
 export interface ExpectedPaymentData {
   providerPaymentId: string;
@@ -277,8 +284,110 @@ export class PaymentService {
   async markSuccessNotificationSent(notificationKey: string) {
     await NotificationModel.updateOne(
       { dedupKey: notificationKey },
-      { $set: { sentAt: new Date() }, $unset: { error: 1 } },
+      {
+        $set: { sentAt: new Date() },
+        $unset: { error: 1, nextAttemptAt: 1, deliveryClaimedUntil: 1 },
+      },
     );
+  }
+  async scheduleSuccessNotificationRetry(notificationKey: string, error: unknown, now = new Date()) {
+    const pending = await NotificationModel.findOne({ dedupKey: notificationKey, sentAt: null });
+    if (!pending) return null;
+    const attempt = (pending.attemptCount ?? 0) + 1;
+    const offsetsSeconds = [5, 15, 30, 60, 300, 900];
+    const delaySeconds = offsetsSeconds[Math.min(attempt - 1, offsetsSeconds.length - 1)]!;
+    const nextAttemptAt = new Date(now.getTime() + delaySeconds * 1_000);
+    await NotificationModel.updateOne(
+      { _id: pending._id, sentAt: null },
+      {
+        $set: { error: String(error), nextAttemptAt },
+        $inc: { attemptCount: 1 },
+        $unset: { deliveryClaimedUntil: 1 },
+      },
+    );
+    return nextAttemptAt;
+  }
+  async markSuccessNotificationFailed(notificationKey: string, error: unknown) {
+    await NotificationModel.updateOne(
+      { dedupKey: notificationKey, sentAt: null },
+      {
+        $set: { error: String(error) },
+        $unset: { nextAttemptAt: 1, deliveryClaimedUntil: 1 },
+      },
+    );
+  }
+  async claimDueSuccessNotifications(now = new Date()): Promise<PendingSuccessNotification[]> {
+    const candidates = await NotificationModel.find({
+      type: 'payment_succeeded',
+      sentAt: null,
+      nextAttemptAt: { $lte: now },
+      $or: [
+        { deliveryClaimedUntil: null },
+        { deliveryClaimedUntil: { $exists: false } },
+        { deliveryClaimedUntil: { $lte: now } },
+      ],
+    })
+      .sort({ nextAttemptAt: 1 })
+      .limit(100);
+    const result: PendingSuccessNotification[] = [];
+    for (const candidate of candidates) {
+      const claimed = await NotificationModel.findOneAndUpdate(
+        {
+          _id: candidate._id,
+          sentAt: null,
+          nextAttemptAt: { $lte: now },
+          $or: [
+            { deliveryClaimedUntil: null },
+            { deliveryClaimedUntil: { $exists: false } },
+            { deliveryClaimedUntil: { $lte: now } },
+          ],
+        },
+        { $set: { deliveryClaimedUntil: new Date(now.getTime() + 60_000) } },
+        { new: true },
+      );
+      if (!claimed) continue;
+      const internalPaymentId = claimed.dedupKey.match(/^payment:(.+):succeeded$/)?.[1];
+      const payment = internalPaymentId
+        ? await PaymentModel.findOne({
+            internalId: internalPaymentId,
+            subscriptionId: claimed.subscriptionId,
+            status: 'succeeded',
+            providerPaymentId: { $exists: true },
+          })
+        : null;
+      const user = payment?.userId ? await UserModel.findById(payment.userId) : null;
+      const plan = payment ? this.plans.get(payment.planId as PlanId) : undefined;
+      if (!payment?.providerPaymentId || !user || !plan) {
+        await this.markSuccessNotificationFailed(claimed.dedupKey, 'Notification binding missing');
+        continue;
+      }
+      const purchaseIntent = await PurchaseIntentModel.findOne({ paymentId: payment._id });
+      const subscription = await SubscriptionModel.findById(claimed.subscriptionId);
+      if (!subscription) {
+        await this.markSuccessNotificationFailed(claimed.dedupKey, 'Subscription missing');
+        continue;
+      }
+      result.push({
+        providerPaymentId: payment.providerPaymentId,
+        notificationKey: claimed.dedupKey,
+        notification: {
+          subscriptionId: subscription._id,
+          telegramId: user.telegramId,
+          planCode: plan.id,
+          ...(purchaseIntent ? { purchaseIntentId: String(purchaseIntent._id) } : {}),
+          planTitle: plan.title,
+          amountMinor: plan.amountMinor,
+          currentPeriodEnd: subscription.currentPeriodEnd ?? null,
+          autoRenew: subscription.autoRenew,
+          lifetime: subscription.lifetime,
+          ...(payment.paymentUiMessageId ? { paymentUiMessageId: payment.paymentUiMessageId } : {}),
+          ...(payment.processingUiMessageId
+            ? { processingUiMessageId: payment.processingUiMessageId }
+            : {}),
+        },
+      });
+    }
+    return result;
   }
   async getUiDeliveryState(providerPaymentId: string) {
     return PaymentModel.findOne({ providerPaymentId })
@@ -322,6 +431,7 @@ export class PaymentService {
         periodEnd: result.notification.currentPeriodEnd,
         type: 'payment_succeeded',
         dedupKey: notificationKey,
+        nextAttemptAt: new Date(),
       });
     } catch (error) {
       if (
@@ -340,7 +450,7 @@ export class PaymentService {
     providerPaymentId: string,
     eventType?: string,
   ): Promise<ProcessPaymentResult> {
-    this.logger.info({ event: 'payment.verification.started', providerPaymentId });
+    this.logger.info({ event: 'payment.verification.started', paymentId: providerPaymentId });
     let remote: Awaited<ReturnType<PaymentGateway['getPayment']>>;
     try {
       remote = await this.gateway.getPayment(providerPaymentId);
@@ -376,6 +486,16 @@ export class PaymentService {
     const payment = await PaymentModel.findOne({ providerPaymentId: remote.id });
     if (!payment) throw new NotFoundError('Unknown provider payment');
     const plan = this.plans.get(payment.planId as PlanId);
+    const [paymentUser, purchaseIntent] = await Promise.all([
+      payment.userId ? UserModel.findById(payment.userId).select({ telegramId: 1 }).lean() : null,
+      PurchaseIntentModel.findOne({ paymentId: payment._id }).select({ _id: 1 }).lean(),
+    ]);
+    const logContext = {
+      paymentId: providerPaymentId,
+      purchaseIntentId: purchaseIntent ? String(purchaseIntent._id) : undefined,
+      telegramId: paymentUser?.telegramId,
+      planCode: payment.planId,
+    };
     assertVerifiedPayment(
       remote,
       {
@@ -450,8 +570,12 @@ export class PaymentService {
       return { status: 'canceled' as const };
     }
     const alreadySucceeded = payment.status === 'succeeded';
-    this.logger.info({ event: 'payment.verification.succeeded', paymentId: payment.internalId });
-    if (alreadySucceeded && payment.type === 'renewal') return { status: 'succeeded' as const };
+    this.logger.info({ event: 'payment.verification.succeeded', ...logContext });
+    this.logger.info({ event: 'payment.processing.started', ...logContext });
+    if (alreadySucceeded && payment.type === 'renewal') {
+      this.logger.info({ event: 'payment.processing.succeeded', ...logContext });
+      return { status: 'succeeded' as const };
+    }
     const now = remote.paidAt ?? new Date();
     const claimed = alreadySucceeded
       ? payment
@@ -477,12 +601,15 @@ export class PaymentService {
           : null,
         UserModel.findById(payment.userId),
       ]);
-      if (subscription && user)
+      if (subscription && user) {
+        this.logger.info({ event: 'payment.processing.succeeded', ...logContext });
         return {
           status: 'succeeded',
           notification: {
             subscriptionId: subscription._id,
             telegramId: user.telegramId,
+            planCode: plan.id,
+            ...(purchaseIntent ? { purchaseIntentId: String(purchaseIntent._id) } : {}),
             planTitle: plan.title,
             amountMinor: plan.amountMinor,
             currentPeriodEnd: subscription.currentPeriodEnd ?? null,
@@ -496,9 +623,12 @@ export class PaymentService {
               : {}),
           },
         };
+      }
+      this.logger.info({ event: 'payment.processing.succeeded', ...logContext });
       return { status: 'succeeded' as const };
     }
     if (payment.type === 'renewal' && payment.subscriptionId) {
+      this.logger.info({ event: 'subscription.activation.started', ...logContext });
       const subscription = await SubscriptionModel.findById(payment.subscriptionId);
       if (!subscription) throw new NotFoundError('Renewal subscription not found');
       if (plan.renewalPeriodMonths === null || subscription.lifetime)
@@ -521,6 +651,8 @@ export class PaymentService {
       await RenewalModel.updateOne({ paymentId: payment._id }, { $set: { status: 'succeeded' } });
       const subscriptionId = String(subscription._id);
       this.logger.info({ event: 'subscription.renewed', subscriptionId });
+      this.logger.info({ event: 'subscription.activation.succeeded', ...logContext });
+      this.logger.info({ event: 'payment.processing.succeeded', ...logContext });
       return { status: 'succeeded' };
     }
     if (!payment.userId) {
@@ -535,8 +667,10 @@ export class PaymentService {
         },
       );
       this.logger.info({ event: 'payment.succeeded', paymentId: payment.internalId });
+      this.logger.info({ event: 'payment.processing.succeeded', ...logContext });
       return { status: 'succeeded' };
     }
+    this.logger.info({ event: 'subscription.activation.started', ...logContext });
     const activated = await mongoose.connection.transaction(async (session) => {
       const currentPayment = await PaymentModel.findById(payment._id).session(session);
       if (!currentPayment) throw new NotFoundError('Payment not found');
@@ -613,6 +747,8 @@ export class PaymentService {
       return {
         subscriptionId: subscription._id,
         telegramId: user.telegramId,
+        planCode: plan.id,
+        ...(purchaseIntent ? { purchaseIntentId: String(purchaseIntent._id) } : {}),
         planTitle: plan.title,
         amountMinor: plan.amountMinor,
         currentPeriodEnd: subscription.currentPeriodEnd ?? null,
@@ -627,6 +763,8 @@ export class PaymentService {
       };
     });
     this.logger.info({ event: 'payment.succeeded', paymentId: payment.internalId });
+    this.logger.info({ event: 'subscription.activation.succeeded', ...logContext });
+    this.logger.info({ event: 'payment.processing.succeeded', ...logContext });
     this.logger.info({ event: 'purchase_intent.completed', paymentId: payment.internalId });
     if (plan.lifetime && activated)
       this.logger.info({
@@ -646,6 +784,8 @@ export class PaymentService {
         notification = {
           subscriptionId: subscription._id,
           telegramId: user.telegramId,
+          planCode: plan.id,
+          ...(purchaseIntent ? { purchaseIntentId: String(purchaseIntent._id) } : {}),
           planTitle: plan.title,
           amountMinor: plan.amountMinor,
           currentPeriodEnd: subscription.currentPeriodEnd ?? null,

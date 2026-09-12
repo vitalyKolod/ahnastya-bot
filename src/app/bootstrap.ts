@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import pino from 'pino';
-import { Api } from 'grammy';
+import { Bot } from 'grammy';
 import { loadEnv } from '../config/env.js';
 import { createPlans } from '../config/plans.js';
 import { connectDatabase, closeDatabase } from '../infrastructure/db/connection.js';
@@ -16,12 +16,21 @@ import { createBot } from '../presentation/telegram/bot.js';
 import { createHttpServer } from '../presentation/http/server.js';
 import { AboutGalleryService } from '../application/about-gallery.service.js';
 import { PurchaseIntentService } from '../application/purchase-intent.service.js';
+import { createTelegramClientOptions } from '../infrastructure/telegram/client.js';
 async function main() {
   const env = loadEnv();
   const logger = pino({
     level: env.LOG_LEVEL,
     redact: {
-      paths: ['req.headers.authorization', 'BOT_TOKEN', 'YOOKASSA_SECRET_KEY', 'claimToken'],
+      paths: [
+        'req.headers.authorization',
+        'BOT_TOKEN',
+        'TELEGRAM_PROXY_SECRET',
+        'YOOKASSA_SECRET_KEY',
+        'MONGODB_URI',
+        'CHECKOUT_SECRET',
+        'claimToken',
+      ],
       censor: '[REDACTED]',
     },
   });
@@ -33,7 +42,10 @@ async function main() {
     env.YOOKASSA_CONNECT_TIMEOUT_MS,
     env.YOOKASSA_REQUEST_TIMEOUT_MS,
   );
-  const api = new Api(env.BOT_TOKEN);
+  const bot = new Bot(env.BOT_TOKEN, {
+    client: createTelegramClientOptions(env),
+  });
+  const api = bot.api;
   const checkout = new CheckoutService(env, plans, gateway, logger);
   const payments = new PaymentService(
     gateway,
@@ -55,9 +67,31 @@ async function main() {
   const broadcast = new BroadcastService(api, logger);
   const gallery = new AboutGalleryService(logger);
   const purchaseIntents = new PurchaseIntentService(env, logger);
-  const bot = createBot(env, plans, checkout, subscriptions, channel, admin, broadcast, payments, gallery, purchaseIntents, logger);
+  createBot(
+    bot,
+    env,
+    plans,
+    checkout,
+    subscriptions,
+    channel,
+    admin,
+    broadcast,
+    payments,
+    gallery,
+    purchaseIntents,
+    logger,
+  );
   const http = createHttpServer(env, payments, api, logger);
-  const scheduler = new SchedulerService(env, plans, gateway, api, channel, logger, payments, http.deliverPaymentResult);
+  const scheduler = new SchedulerService(
+    env,
+    plans,
+    gateway,
+    api,
+    channel,
+    logger,
+    payments,
+    http.deliverPaymentResult,
+  );
   await http.listen({ port: env.PORT, host: '0.0.0.0' });
   scheduler.start();
   void bot.start({

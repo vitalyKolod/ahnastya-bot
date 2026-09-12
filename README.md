@@ -34,14 +34,14 @@ npm run dev
 
 Скопируйте `.env.example`. Все поля валидируются при старте. Обязательны публичные HTTPS URL приложения/оферты/privacy/support, Telegram и Mongo credentials, цены, `CHECKOUT_SECRET` (минимум 32 случайных символа), YooKassa shop ID/secret. `TRUST_PROXY=true` устанавливайте только за доверенным reverse proxy. Секреты и raw claim tokens не логируются.
 
-Юридические тексты не входят в проект: задаются `OFFER_URL`, `OFFER_VERSION`, `PRIVACY_URL`. Backend сохраняет версию и время согласий вместе с внутренними идентификаторами checkout. Цены задаются в `PLAN_MONTH_AMOUNT_RUB`, `PLAN_THREE_MONTH_AMOUNT_RUB`, `PLAN_LIFETIME_AMOUNT_RUB` и не принимаются из callback. Необязательные `CONSULTATION_URL` и `HOW_IT_LOOKS_MEDIA_FILE_ID` добавляют кнопку консультации и медиа на экран примеров; пустые значения безопасно скрываются. `APP_BASE_URL` используется для публичных backend endpoints. `RENEWAL_RETRY_OFFSETS_HOURS`, grace, TTL invite/legacy claim и scheduler interval настраиваются env.
+Юридические тексты не входят в проект: задаются `OFFER_URL`, `OFFER_VERSION`, `PRIVACY_URL`. Backend сохраняет версию и время согласий вместе с внутренними идентификаторами checkout. Цены задаются в `PLAN_MONTH_AMOUNT_RUB`, `PLAN_THREE_MONTH_AMOUNT_RUB`, `PLAN_LIFETIME_AMOUNT_RUB` и не принимаются из callback. Необязательные `CONSULTATION_URL` и `HOW_IT_LOOKS_MEDIA_FILE_ID` добавляют кнопку консультации и медиа на экран примеров; пустые значения безопасно скрываются. `APP_BASE_URL` — только публичный origin приложения без route, query или hash (production: `https://pay.kladovaya-content.ru`). Он не должен содержать `/webhooks/yookassa` или `/payment/return`. `RENEWAL_RETRY_OFFSETS_HOURS`, grace, TTL invite/legacy claim и scheduler interval настраиваются env.
 
 ## ЮKassa
 
 Создайте тестовый магазин, внесите тестовые `YOOKASSA_SHOP_ID` и `YOOKASSA_SECRET_KEY`. Return URL формируется как `${APP_BASE_URL}/payment/return`. В кабинете укажите webhook:
 
 ```text
-https://YOUR-DOMAIN/webhooks/yookassa
+https://pay.kladovaya-content.ru/webhooks/yookassa
 ```
 
 Подпишите события `payment.succeeded` и `payment.canceled`. Endpoint не верит payload: извлекает только ID, затем получает платёж официальным API и сверяет status/paid/amount/currency/internal metadata. Повторы идемпотентны.

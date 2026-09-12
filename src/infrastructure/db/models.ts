@@ -136,9 +136,13 @@ const notificationSchema = new Schema(
     dedupKey: { type: String, required: true, unique: true },
     sentAt: Date,
     error: String,
+    attemptCount: { type: Number, default: 0 },
+    nextAttemptAt: { type: Date, index: true },
+    deliveryClaimedUntil: Date,
   },
   opts,
 );
+notificationSchema.index({ type: 1, sentAt: 1, nextAttemptAt: 1 });
 const renewalSchema = new Schema(
   {
     subscriptionId: { type: Schema.Types.ObjectId, ref: 'Subscription', required: true },

@@ -20,7 +20,7 @@ export const ru = {
     renew: boolean,
     lifetime: boolean,
   ) =>
-    `🖇️ <b>Моя подписка</b>\n\nСтатус: ${status === 'active' ? 'активна ☑️' : status}\nТариф: ${plan}\n${lifetime ? 'Доступ: навсегда' : `\nОплачено до: ${date}\nСтоимость: ${price}\nАвтопродление: ${renew ? '☑️ включено' : 'выключено — списаний больше не будет'}`}`,
+    `🖇️ <b>Моя подписка</b>\n\nСтатус: ${status === 'active' ? 'активна ☑️' : status}\nТариф: ${plan}\n${lifetime ? 'Доступ: навсегда' : `\nОплачено до: ${date}\nСтоимость: ${price}\nАвтопродление: ${renew ? ' включено ☑️' : 'выключено — списаний больше не будет'}`}`,
   claimSuccess: (plan: string, date: string | null, renew: boolean, lifetime: boolean) =>
     `✅ <b>Оплата успешно прошла!</b>\n\n🖇️Тариф: ${plan}\n${lifetime ? '♾️ Доступ без ограничения срока' : `📅 Доступ до: ${date}\n🔄 Автопродление: ${renew ? 'включено' : 'выключено'}`}\n\nДобро пожаловать в кладовую контента ❤️`,
   paymentSuccess: (

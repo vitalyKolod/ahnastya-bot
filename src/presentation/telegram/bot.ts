@@ -1,4 +1,4 @@
-import { Bot, InlineKeyboard, type Context } from 'grammy';
+import { InlineKeyboard, type Bot, type Context } from 'grammy';
 import type { Logger } from 'pino';
 import type { Env } from '../../config/env.js';
 import type { Plan, PlanId } from '../../config/plans.js';
@@ -30,6 +30,7 @@ export async function acknowledgeCallback(
 }
 
 export function createBot(
+  bot: Bot,
   env: Env,
   plans: ReadonlyMap<PlanId, Plan>,
   checkout: CheckoutService,
@@ -42,7 +43,6 @@ export function createBot(
   purchaseIntents: PurchaseIntentService,
   logger: Logger,
 ) {
-  const bot = new Bot(env.BOT_TOKEN);
   const pendingBroadcasts = new Map<number, string>();
 
   async function identify(ctx: Context) {

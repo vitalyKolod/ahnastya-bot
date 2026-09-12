@@ -30,6 +30,7 @@ const env = loadEnv({
 });
 const destination = `https://t.me/${env.BOT_USERNAME}`;
 const success = {
+  subscriptionId: {} as never,
   telegramId: 42,
   planTitle: 'Месяц',
   amountMinor: 10000,
@@ -62,6 +63,9 @@ function harness(
     markSuccessUiSent: vi.fn().mockResolvedValue(undefined),
     markAccessNotificationSent: vi.fn().mockResolvedValue(undefined),
     markSuccessNotificationSent: vi.fn().mockResolvedValue(undefined),
+    scheduleSuccessNotificationRetry: vi.fn().mockResolvedValue(new Date('2026-10-10T12:00:05Z')),
+    markSuccessNotificationFailed: vi.fn().mockResolvedValue(undefined),
+    claimDueSuccessNotifications: vi.fn().mockResolvedValue([]),
     releaseSuccessNotification: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -93,13 +97,13 @@ describe('payment return UX', () => {
     expect(h.api.sendMessage).toHaveBeenCalledWith(
       42,
       expect.stringContaining('Проверяем оплату'),
-      { parse_mode: 'HTML' },
+      expect.objectContaining({ parse_mode: 'HTML' }),
     );
     expect(h.api.sendMessage.mock.calls[0]![1]).not.toContain('Оплата получена');
     expect(h.payments.saveProcessingUi).toHaveBeenCalledWith('provider-1', 101);
   });
 
-  it('return succeeded edits processing into success and sends access separately', async () => {
+  it('return succeeded edits processing into success with channel access', async () => {
     const h = harness({
       handleReturn: vi.fn().mockResolvedValue({
         providerPaymentId: 'provider-1',
@@ -113,14 +117,10 @@ describe('payment return UX', () => {
       42,
       101,
       expect.stringContaining('Оплата успешно прошла'),
-      { parse_mode: 'HTML' },
+      expect.objectContaining({ parse_mode: 'HTML' }),
     );
     expect(h.api.editMessageText.mock.calls[0]![2]).toContain('10 октября 2026 г.');
-    expect(h.api.sendMessage).toHaveBeenCalledWith(
-      42,
-      expect.stringContaining('Твой доступ готов'),
-      expect.any(Object),
-    );
+    expect(h.api.editMessageText.mock.calls[0]![2]).toContain('Твой доступ готов');
   });
 
   it('webhook later edits an existing processing message', async () => {
@@ -139,11 +139,11 @@ describe('payment return UX', () => {
       42,
       101,
       expect.stringContaining('Оплата успешно прошла'),
-      { parse_mode: 'HTML' },
+      expect.objectContaining({ parse_mode: 'HTML' }),
     );
   });
 
-  it('payment.succeeded webhook sends success and access without a return request', async () => {
+  it('payment.succeeded webhook sends success and access once to the correct user without return', async () => {
     const h = harness({
       handleWebhook: vi.fn().mockResolvedValue({
         handled: true,
@@ -160,6 +160,12 @@ describe('payment return UX', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(h.payments.handleReturn).not.toHaveBeenCalled();
+    expect(h.api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(h.api.sendMessage).toHaveBeenCalledWith(
+      42,
+      expect.stringContaining('Оплата успешно прошла'),
+      expect.objectContaining({ parse_mode: 'HTML' }),
+    );
     expect(
       h.api.sendMessage.mock.calls.some((call) =>
         String(call[1]).includes('Оплата успешно прошла'),
@@ -168,6 +174,72 @@ describe('payment return UX', () => {
     expect(
       h.api.sendMessage.mock.calls.some((call) => String(call[1]).includes('Твой доступ готов')),
     ).toBe(true);
+  });
+
+  it('cleanup edit failure does not prevent the success send', async () => {
+    const h = harness(
+      {
+        handleWebhook: vi.fn().mockResolvedValue({
+          handled: true,
+          providerPaymentId: 'provider-1',
+          notification: { ...success, processingUiMessageId: undefined, paymentUiMessageId: 77 },
+          notificationKey: 'key',
+        }),
+      },
+      {
+        deleteMessage: vi.fn().mockRejectedValue(new Error('cleanup delete failed')),
+        editMessageText: vi.fn().mockRejectedValue(new Error('cleanup edit failed')),
+      },
+    );
+    apps.push(h.app);
+    await h.app.inject({
+      method: 'POST',
+      url: '/webhooks/yookassa',
+      payload: { event: 'payment.succeeded', object: { id: 'provider-1' } },
+    });
+    expect(h.api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(h.api.sendMessage).toHaveBeenCalledWith(
+      42,
+      expect.stringContaining('Оплата успешно прошла'),
+      expect.any(Object),
+    );
+  });
+
+  it('keeps a transient Telegram failure pending, retries, and ignores a duplicate webhook', async () => {
+    const delivery = { successUiSentAt: undefined as Date | undefined, accessNotificationSentAt: undefined as Date | undefined };
+    const notification = { ...success, processingUiMessageId: 0, purchaseIntentId: 'intent-1', planCode: 'month' };
+    const h = harness(
+      {
+        handleWebhook: vi.fn().mockResolvedValue({
+          handled: true, providerPaymentId: 'provider-1', notification, notificationKey: 'key',
+        }),
+        getUiDeliveryState: vi.fn().mockImplementation(() => Promise.resolve({ ...delivery })),
+        markSuccessUiSent: vi.fn().mockImplementation(() => { delivery.successUiSentAt = new Date(); }),
+        markAccessNotificationSent: vi.fn().mockImplementation(() => { delivery.accessNotificationSentAt = new Date(); }),
+      },
+      {
+        sendMessage: vi
+          .fn()
+          .mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { code: 'ETIMEDOUT' }))
+          .mockResolvedValue({ message_id: 501 }),
+      },
+    );
+    apps.push(h.app);
+    const request = {
+      method: 'POST' as const,
+      url: '/webhooks/yookassa',
+      payload: { event: 'payment.succeeded', object: { id: 'provider-1' } },
+    };
+    await h.app.inject(request);
+    expect(h.payments.scheduleSuccessNotificationRetry).toHaveBeenCalledWith('key', expect.any(Error));
+    expect(h.payments.markSuccessNotificationSent).not.toHaveBeenCalled();
+
+    await h.app.deliverPaymentResult('provider-1', {
+      status: 'succeeded', notification, notificationKey: 'key',
+    });
+    expect(h.payments.markSuccessNotificationSent).toHaveBeenCalledWith('key');
+    await h.app.inject(request);
+    expect(h.api.sendMessage).toHaveBeenCalledTimes(2);
   });
 
   it('duplicate webhooks do not duplicate Telegram messages', async () => {
@@ -251,9 +323,7 @@ describe('payment return UX', () => {
       flushBackground(),
     ]);
     expect(h.api.editMessageText).toHaveBeenCalledTimes(1);
-    expect(
-      h.api.sendMessage.mock.calls.filter((call) => String(call[1]).includes('Твой доступ готов')),
-    ).toHaveLength(1);
+    expect(h.api.editMessageText.mock.calls[0]![2]).toContain('Твой доступ готов');
   });
 
   it('already succeeded payment skips misleading processing UI', async () => {

@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
-import { InlineKeyboard, type Api } from 'grammy';
+import { GrammyError, HttpError, InlineKeyboard, type Api } from 'grammy';
 import type { Logger } from 'pino';
 import type {
   PaymentService,
@@ -19,6 +19,8 @@ const shell = (title: string, body: string) =>
 
 interface SuccessNotification {
   telegramId: number;
+  planCode?: string;
+  purchaseIntentId?: string;
   planTitle: string;
   amountMinor: number;
   currentPeriodEnd: Date | null;
@@ -33,8 +35,22 @@ function webhookLogContext(body: unknown) {
   const candidate = body as { event?: unknown; object?: { id?: unknown } };
   return {
     ...(typeof candidate.event === 'string' ? { webhookEvent: candidate.event } : {}),
-    ...(typeof candidate.object?.id === 'string' ? { providerPaymentId: candidate.object.id } : {}),
+    ...(typeof candidate.object?.id === 'string' ? { paymentId: candidate.object.id } : {}),
   };
+}
+
+export function isTransientTelegramError(error: unknown): boolean {
+  if (error instanceof HttpError) return true;
+  if (error instanceof GrammyError)
+    return error.error_code === 429 || (error.error_code >= 500 && error.error_code <= 599);
+  if (!(error instanceof Error)) return false;
+  const coded = error as Error & { code?: string; cause?: { code?: string; message?: string } };
+  const code = coded.code ?? coded.cause?.code;
+  return (
+    ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED'].includes(code ?? '') ||
+    /fetch failed|network|socket|timed?\s*out/i.test(error.message) ||
+    /fetch failed|network|socket|timed?\s*out/i.test(coded.cause?.message ?? '')
+  );
 }
 
 export function createHttpServer(env: Env, payments: PaymentService, api: Api, logger: Logger) {
@@ -120,6 +136,10 @@ export function createHttpServer(env: Env, payments: PaymentService, api: Api, l
     async (req, reply) => {
       const context = { requestId: req.id, ...webhookLogContext(req.body) };
       logger.info({ event: 'yookassa.webhook.received', ...context });
+      if ('paymentId' in context)
+        logger.info({ event: 'yookassa.webhook.payment_id', ...context });
+      if ('webhookEvent' in context)
+        logger.info({ event: 'yookassa.webhook.event', ...context });
       try {
         const result = await payments.handleWebhook(req.body);
         if ('notification' in result && result.notification && result.notificationKey)
@@ -198,36 +218,49 @@ export function createHttpServer(env: Env, payments: PaymentService, api: Api, l
     n: SuccessNotification,
     notificationKey: string,
   ) {
+    const logContext = {
+      paymentId: providerPaymentId,
+      purchaseIntentId: n.purchaseIntentId,
+      telegramId: n.telegramId,
+      planCode: n.planCode,
+    };
+    logger.info({ event: 'telegram.notification.started', ...logContext });
     const date = n.currentPeriodEnd
       ? formatUserDate(n.currentPeriodEnd, env.BUSINESS_TIMEZONE)
       : null;
     try {
       const delivery = await payments.getUiDeliveryState(providerPaymentId);
-      if (n.paymentUiMessageId) {
-        await api.deleteMessage(n.telegramId, n.paymentUiMessageId).then(
-          () => logger.info({ event: 'payment.ui_cleaned', telegramId: n.telegramId }),
-          async () => {
-            await api
-              .editMessageText(n.telegramId, n.paymentUiMessageId!, '☑️ Оплачено', {
-                reply_markup: new InlineKeyboard(),
-              })
-              .catch((error) =>
-                logger.warn({
-                  event: 'payment.ui_cleanup_failed',
-                  telegramId: n.telegramId,
-                  err: error,
-                }),
-              );
-          },
-        );
+      let accessDelivered = Boolean(delivery?.accessNotificationSentAt);
+      if (n.paymentUiMessageId)
+        try {
+          await api.deleteMessage(n.telegramId, n.paymentUiMessageId);
+          logger.info({ event: 'payment.ui_cleaned', telegramId: n.telegramId });
+        } catch (deleteError) {
+          try {
+            await api.editMessageText(n.telegramId, n.paymentUiMessageId, '☑️ Оплачено', {
+              reply_markup: new InlineKeyboard(),
+            });
+          } catch (editError) {
+            logger.warn({
+              event: 'payment.ui_cleanup_failed',
+              telegramId: n.telegramId,
+              err: editError,
+              deleteError,
+            });
+          }
       }
-      const successText = `✅ <b>Оплата успешно прошла!</b>\n\n🖇️ Тариф: ${escapeHtml(n.planTitle)}\n💳 Оплачено: ${minorToRub(n.amountMinor)}\n${n.lifetime ? '♾️ Доступ без ограничения срока' : `📅 Доступ до: ${date}\n🔄 Автопродление: ${n.autoRenew ? 'включено' : 'выключено'}`}\n\nДобро пожаловать в кладовую контента ❤️`;
+      const successText = `✅ <b>Оплата успешно прошла!</b>\n\n🖇️ Тариф: ${escapeHtml(n.planTitle)}\n💳 Оплачено: ${minorToRub(n.amountMinor)}\n${n.lifetime ? '♾️ Доступ без ограничения срока' : `📅 Доступ до: ${date}\n🔄 Автопродление: ${n.autoRenew ? 'включено' : 'выключено'}`}\n\nДобро пожаловать в кладовую контента ❤️\n\n${ru.accessReady}`;
+      const accessKeyboard = new InlineKeyboard().text('❤️ ВСТУПИТЬ В КАНАЛ', 'invite');
       if (!delivery?.successUiSentAt) {
+        logger.info({ event: 'channel.access.started', ...logContext });
         if (n.processingUiMessageId) {
           try {
+            logger.info({ event: 'telegram.notification.send_attempt', ...logContext });
             await api.editMessageText(n.telegramId, n.processingUiMessageId, successText, {
               parse_mode: 'HTML',
+              reply_markup: accessKeyboard,
             });
+            logger.info({ event: 'telegram.notification.sent', ...logContext });
             logger.info({ event: 'payment.processing_ui_edited', telegramId: n.telegramId });
           } catch (error) {
             logger.warn({
@@ -235,26 +268,53 @@ export function createHttpServer(env: Env, payments: PaymentService, api: Api, l
               telegramId: n.telegramId,
               err: error,
             });
-            await api.sendMessage(n.telegramId, successText, { parse_mode: 'HTML' });
+            logger.info({ event: 'telegram.notification.send_attempt', ...logContext });
+            await api.sendMessage(n.telegramId, successText, {
+              parse_mode: 'HTML',
+              reply_markup: accessKeyboard,
+            });
+            logger.info({ event: 'telegram.notification.sent', ...logContext });
           }
-        } else await api.sendMessage(n.telegramId, successText, { parse_mode: 'HTML' });
+        } else {
+          logger.info({ event: 'telegram.notification.send_attempt', ...logContext });
+          await api.sendMessage(n.telegramId, successText, {
+            parse_mode: 'HTML',
+            reply_markup: accessKeyboard,
+          });
+          logger.info({ event: 'telegram.notification.sent', ...logContext });
+        }
         await payments.markSuccessUiSent(providerPaymentId);
         logger.info({ event: 'payment.success_ui_sent', telegramId: n.telegramId });
+        await payments.markAccessNotificationSent(providerPaymentId);
+        accessDelivered = true;
+        logger.info({ event: 'channel.access.succeeded', ...logContext });
       }
-      if (!delivery?.accessNotificationSentAt) {
+      if (!accessDelivered) {
+        logger.info({ event: 'channel.access.started', ...logContext });
+        logger.info({ event: 'telegram.notification.send_attempt', ...logContext });
         await api.sendMessage(n.telegramId, ru.accessReady, {
           parse_mode: 'HTML',
-          reply_markup: new InlineKeyboard().text('❤️ ВСТУПИТЬ В КАНАЛ', 'invite'),
+          reply_markup: accessKeyboard,
         });
+        logger.info({ event: 'telegram.notification.sent', ...logContext });
         await payments.markAccessNotificationSent(providerPaymentId);
-        logger.info({ event: 'channel.access_ready', telegramId: n.telegramId });
+        logger.info({ event: 'channel.access.succeeded', ...logContext });
       }
       await payments.markSuccessNotificationSent(notificationKey);
+      logger.info({ event: 'telegram.notification.succeeded', ...logContext });
     } catch (error) {
-      await payments
-        .releaseSuccessNotification(providerPaymentId, notificationKey)
-        .catch(() => undefined);
-      logger.error({ event: 'payment.telegram_notification_failed', err: error });
+      if (isTransientTelegramError(error)) {
+        logger.warn({ event: 'telegram.notification.transient_failed', ...logContext, err: error });
+        const nextAttemptAt = await payments.scheduleSuccessNotificationRetry(notificationKey, error);
+        logger.info({
+          event: 'telegram.notification.retry_scheduled',
+          ...logContext,
+          nextAttemptAt,
+        });
+      } else {
+        await payments.markSuccessNotificationFailed(notificationKey, error);
+        logger.error({ event: 'telegram.notification.failed', ...logContext, err: error });
+      }
     }
   }
 

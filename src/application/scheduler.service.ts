@@ -26,7 +26,12 @@ export const recurringDueFilter = (now = new Date()) => ({
 });
 export const expiringFilter = (now = new Date()) => ({
   $or: [
-    { status: 'active', lifetime: { $ne: true }, autoRenew: false, currentPeriodEnd: { $lte: now } },
+    {
+      status: 'active',
+      lifetime: { $ne: true },
+      autoRenew: false,
+      currentPeriodEnd: { $lte: now },
+    },
     { status: 'past_due', lifetime: { $ne: true }, graceUntil: { $lte: now } },
   ],
 });
@@ -50,13 +55,19 @@ export class SchedulerService {
   start() {
     this.timer = setInterval(
       () =>
-        void this.tick().catch((error) => this.logger.error({ event: 'scheduler.error', err: error })),
+        void this.tick().catch((error) =>
+          this.logger.error({ event: 'scheduler.error', err: error }),
+        ),
       this.env.SCHEDULER_INTERVAL_MINUTES * 60_000,
     );
     if (this.payments && this.deliverPaymentResult)
       this.verificationTimer = setInterval(
-        () => void new MongoLease('payment-verification', 9_000).run(() => this.paymentVerifications())
-          .catch((error) => this.logger.error({ event: 'scheduler.payment_verification_error', err: error })),
+        () =>
+          void new MongoLease('payment-verification', 9_000)
+            .run(() => this.paymentVerifications())
+            .catch((error) =>
+              this.logger.error({ event: 'scheduler.payment_verification_error', err: error }),
+            ),
         10_000,
       );
     void this.tick();
@@ -81,6 +92,17 @@ export class SchedulerService {
     const results = await this.payments.verifyDuePayments();
     for (const item of results)
       await this.deliverPaymentResult(item.providerPaymentId, item.result, item.delayedUiTarget);
+    await this.processTelegramNotificationRetries();
+  }
+  async processTelegramNotificationRetries(now = new Date()) {
+    if (!this.payments || !this.deliverPaymentResult) return;
+    const pending = await this.payments.claimDueSuccessNotifications(now);
+    for (const item of pending)
+      await this.deliverPaymentResult(item.providerPaymentId, {
+        status: 'succeeded',
+        notification: item.notification,
+        notificationKey: item.notificationKey,
+      });
   }
   async processAbandonedCheckoutReminders(now = new Date()) {
     const staleAfter = new Date(now.getTime() - 7 * 86_400_000);
@@ -89,7 +111,9 @@ export class SchedulerService {
       reminderSentAt: null,
       startedAt: { $gte: staleAfter },
       status: { $in: ['browsing', 'payment_created'] },
-    }).sort({ reminderDueAt: 1 }).limit(100);
+    })
+      .sort({ reminderDueAt: 1 })
+      .limit(100);
     for (const candidate of candidates) {
       this.logger.info({ event: 'abandoned_checkout.detected', intentId: candidate.id });
       const [subscription, payment] = await Promise.all([
@@ -101,22 +125,36 @@ export class SchedulerService {
           { _id: candidate._id, reminderSentAt: null },
           { $set: { status: subscription || payment ? 'paid' : 'canceled' } },
         );
-        this.logger.info({ event: 'abandoned_checkout.reminder_skipped', intentId: candidate.id, reason: 'already_active_or_paid' });
+        this.logger.info({
+          event: 'abandoned_checkout.reminder_skipped',
+          intentId: candidate.id,
+          reason: 'already_active_or_paid',
+        });
         continue;
       }
       let confirmationUrl: string | undefined;
       if (payment?.providerPaymentId && payment.status === 'pending') {
         const remote = await this.gateway.getPayment(payment.providerPaymentId);
         if (remote.paid || remote.status === 'succeeded') {
-          this.logger.info({ event: 'abandoned_checkout.reminder_skipped', intentId: candidate.id, reason: 'provider_succeeded' });
+          this.logger.info({
+            event: 'abandoned_checkout.reminder_skipped',
+            intentId: candidate.id,
+            reason: 'provider_succeeded',
+          });
           continue;
         }
         if (remote.status === 'pending' || remote.status === 'waiting_for_capture')
-          confirmationUrl = remote.confirmationUrl ?? (candidate.checkoutSessionId
-            ? (await import('../infrastructure/db/models.js').then(({ CheckoutModel }) =>
-                CheckoutModel.findById(candidate.checkoutSessionId).select('confirmationUrl').lean()
-              ))?.confirmationUrl ?? undefined
-            : undefined);
+          confirmationUrl =
+            remote.confirmationUrl ??
+            (candidate.checkoutSessionId
+              ? ((
+                  await import('../infrastructure/db/models.js').then(({ CheckoutModel }) =>
+                    CheckoutModel.findById(candidate.checkoutSessionId)
+                      .select('confirmationUrl')
+                      .lean(),
+                  )
+                )?.confirmationUrl ?? undefined)
+              : undefined);
       }
       const claimed = await PurchaseIntentModel.findOneAndUpdate(
         {
@@ -129,19 +167,33 @@ export class SchedulerService {
         { new: true },
       );
       if (!claimed) continue;
-      const activeImmediatelyBeforeSend = await SubscriptionModel.exists({ userId: claimed.userId, status: 'active' });
+      const activeImmediatelyBeforeSend = await SubscriptionModel.exists({
+        userId: claimed.userId,
+        status: 'active',
+      });
       const paidImmediatelyBeforeSend = claimed.paymentId
         ? await PaymentModel.exists({ _id: claimed.paymentId, status: 'succeeded' })
         : null;
       if (activeImmediatelyBeforeSend || paidImmediatelyBeforeSend) {
-        await PurchaseIntentModel.updateOne({ _id: claimed._id }, { $set: { status: 'paid' }, $unset: { reminderClaimedAt: 1 } });
-        this.logger.info({ event: 'abandoned_checkout.reminder_skipped', intentId: claimed.id, reason: 'paid_during_processing' });
+        await PurchaseIntentModel.updateOne(
+          { _id: claimed._id },
+          { $set: { status: 'paid' }, $unset: { reminderClaimedAt: 1 } },
+        );
+        this.logger.info({
+          event: 'abandoned_checkout.reminder_skipped',
+          intentId: claimed.id,
+          reason: 'paid_during_processing',
+        });
         continue;
       }
       const keyboard = new InlineKeyboard();
       if (confirmationUrl) keyboard.url('❤️ ПРОДОЛЖИТЬ ОФОРМЛЕНИЕ', confirmationUrl);
-      else keyboard.text(candidate.planId ? '❤️ ПРОДОЛЖИТЬ ОФОРМЛЕНИЕ' : '❤️ ВЫБРАТЬ ТАРИФ', 'abandoned:resume');
-      keyboard.row().text('Не хочу сейчас', 'abandoned:cancel');
+      else
+        keyboard.text(
+          candidate.planId ? '❤️ ПРОДОЛЖИТЬ ОФОРМЛЕНИЕ' : '❤️ ВЫБРАТЬ ТАРИФ',
+          'abandoned:resume',
+        );
+
       try {
         await this.api.sendMessage(candidate.telegramId, ru.abandonedCheckout, {
           parse_mode: 'HTML',
@@ -149,12 +201,22 @@ export class SchedulerService {
         });
         await PurchaseIntentModel.updateOne(
           { _id: claimed._id, reminderSentAt: null },
-          { $set: { reminderSentAt: new Date(), status: 'abandoned' }, $unset: { reminderClaimedAt: 1 } },
+          {
+            $set: { reminderSentAt: new Date(), status: 'abandoned' },
+            $unset: { reminderClaimedAt: 1 },
+          },
         );
         this.logger.info({ event: 'abandoned_checkout.reminder_sent', intentId: claimed.id });
       } catch (error) {
-        await PurchaseIntentModel.updateOne({ _id: claimed._id }, { $unset: { reminderClaimedAt: 1 } });
-        this.logger.error({ event: 'abandoned_checkout.reminder_failed', intentId: claimed.id, err: error });
+        await PurchaseIntentModel.updateOne(
+          { _id: claimed._id },
+          { $unset: { reminderClaimedAt: 1 } },
+        );
+        this.logger.error({
+          event: 'abandoned_checkout.reminder_failed',
+          intentId: claimed.id,
+          err: error,
+        });
       }
     }
   }
