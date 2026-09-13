@@ -25,17 +25,23 @@ export class AboutGalleryService {
     try {
       names = await readdir(this.directory);
     } catch (error) {
-      this.logger.warn({ event: 'about_gallery.directory_unavailable', err: error, directory: this.directory });
+      this.logger.warn({
+        event: 'about_gallery.directory_unavailable',
+        err: error,
+        directory: this.directory,
+      });
     }
     const byNumber = new Map<number, string>();
     for (const name of names) {
       const match = IMAGE_NAME.exec(name);
       if (match) byNumber.set(Number(match[1]), path.join(this.directory, name));
     }
-    this.slides = [...byNumber].sort(([a], [b]) => a - b).map(([number, filePath]) => ({
-      number,
-      path: filePath,
-    }));
+    this.slides = [...byNumber]
+      .sort(([a], [b]) => a - b)
+      .map(([number, filePath]) => ({
+        number,
+        path: filePath,
+      }));
     for (let number = 1; number <= 7; number++)
       if (!byNumber.has(number))
         this.logger.warn({ event: 'about_gallery.slide_missing', slide: number });
@@ -59,9 +65,7 @@ export class AboutGalleryService {
       photo: { type: 'photo', media: new InputFile(slide.path) },
     }));
     const mediaBlock: InputRichBlockPhoto | InputRichBlockSlideshow =
-      photos.length === 1
-        ? photos[0]!
-        : { type: 'slideshow', blocks: photos };
+      photos.length === 1 ? photos[0]! : { type: 'slideshow', blocks: photos };
     return {
       blocks: [
         mediaBlock,
@@ -69,7 +73,9 @@ export class AboutGalleryService {
           type: 'paragraph',
           text: [
             { type: 'bold', text: '🎬 Как выглядит кладовая?' },
-            '\n\nЛистай примеры материалов внутри ❤️',
+            '\n\nИнформация выходит до 5 раз в неделю! Есть разовые форматы, еженедельные рубрики, туториалы, трендовые шрифты, уроки и личный опыт по сотрудничествам, идеи для постов, фото, reels и тд',
+
+            '\n\nИ небольшой секрет — всех участниц канала ожидает ежемесячная рубрика по разбору профиля от меня🤫 ',
           ],
         },
       ],
