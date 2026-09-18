@@ -41,7 +41,7 @@ describe('YooKassa initial payment', () => {
       amount: { value: '1990.00', currency: 'RUB' },
       capture: true,
       confirmation: { type: 'redirect', return_url: 'https://app.example/payment/return' },
-      save_payment_method: true,
+      save_payment_method: false,
       metadata: { internalPaymentId: 'internal-payment' },
     });
     expect(result.confirmationUrl).toBe('https://yookassa.example/confirmation');
@@ -49,10 +49,17 @@ describe('YooKassa initial payment', () => {
 });
 
 describe('YooKassa GET retry policy', () => {
-  const payment = () => new Response(JSON.stringify({
-    id: 'provider-payment', status: 'succeeded', paid: true,
-    amount: { value: '100.00', currency: 'RUB' }, metadata: {},
-  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const payment = () =>
+    new Response(
+      JSON.stringify({
+        id: 'provider-payment',
+        status: 'succeeded',
+        paid: true,
+        amount: { value: '100.00', currency: 'RUB' },
+        metadata: {},
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
 
   afterEach(() => {
     vi.useRealTimers();
@@ -61,10 +68,14 @@ describe('YooKassa GET retry policy', () => {
 
   it('retries a fetch timeout and succeeds on the second attempt', async () => {
     vi.useFakeTimers();
-    const timeout = Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } });
+    const timeout = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'UND_ERR_CONNECT_TIMEOUT' },
+    });
     const fetchMock = vi.fn().mockRejectedValueOnce(timeout).mockResolvedValueOnce(payment());
     vi.stubGlobal('fetch', fetchMock);
-    const resultPromise = new YooKassaPaymentGateway('shop', 'secret').getPayment('provider-payment');
+    const resultPromise = new YooKassaPaymentGateway('shop', 'secret').getPayment(
+      'provider-payment',
+    );
     await vi.runAllTimersAsync();
     await expect(resultPromise).resolves.toMatchObject({ status: 'succeeded' });
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -72,9 +83,14 @@ describe('YooKassa GET retry policy', () => {
 
   it.each([429, 500, 502, 503, 504])('retries HTTP %s', async (status) => {
     vi.useFakeTimers();
-    const fetchMock = vi.fn().mockResolvedValueOnce(new Response('', { status })).mockResolvedValueOnce(payment());
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('', { status }))
+      .mockResolvedValueOnce(payment());
     vi.stubGlobal('fetch', fetchMock);
-    const resultPromise = new YooKassaPaymentGateway('shop', 'secret').getPayment('provider-payment');
+    const resultPromise = new YooKassaPaymentGateway('shop', 'secret').getPayment(
+      'provider-payment',
+    );
     await vi.runAllTimersAsync();
     await resultPromise;
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -83,8 +99,9 @@ describe('YooKassa GET retry policy', () => {
   it.each([400, 401, 403, 404])('does not retry HTTP %s', async (status) => {
     const fetchMock = vi.fn().mockResolvedValue(new Response('', { status }));
     vi.stubGlobal('fetch', fetchMock);
-    await expect(new YooKassaPaymentGateway('shop', 'secret').getPayment('provider-payment'))
-      .rejects.toThrow(`YooKassa request failed (${status})`);
+    await expect(
+      new YooKassaPaymentGateway('shop', 'secret').getPayment('provider-payment'),
+    ).rejects.toThrow(`YooKassa request failed (${status})`);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
