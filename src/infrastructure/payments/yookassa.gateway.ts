@@ -34,10 +34,20 @@ export class YooKassaPaymentGateway implements PaymentGateway {
   }
   private isTransientNetworkError(error: unknown) {
     if (!(error instanceof Error)) return false;
-    const code = (error as Error & { code?: string; cause?: { code?: string } }).code ??
+    const code =
+      (error as Error & { code?: string; cause?: { code?: string } }).code ??
       (error as Error & { cause?: { code?: string } }).cause?.code;
-    return ['ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET'].includes(code ?? '') ||
-      /fetch failed|connect.*timeout|socket.*timeout|network/i.test(error.message);
+    return (
+      [
+        'ETIMEDOUT',
+        'ECONNRESET',
+        'EAI_AGAIN',
+        'ENETUNREACH',
+        'UND_ERR_CONNECT_TIMEOUT',
+        'UND_ERR_SOCKET',
+      ].includes(code ?? '') ||
+      /fetch failed|connect.*timeout|socket.*timeout|network/i.test(error.message)
+    );
   }
   private async sleep(ms: number) {
     await new Promise((resolve) => setTimeout(resolve, ms));
@@ -68,8 +78,9 @@ export class YooKassaPaymentGateway implements PaymentGateway {
           throw new TransientExternalServiceError(`YooKassa request failed (${response.status})`);
         throw new ExternalServiceError(`YooKassa request failed (${response.status})`);
       } catch (error) {
-        const transient = error instanceof TransientExternalServiceError ||
-          error instanceof DOMException && error.name === 'TimeoutError' ||
+        const transient =
+          error instanceof TransientExternalServiceError ||
+          (error instanceof DOMException && error.name === 'TimeoutError') ||
           this.isTransientNetworkError(error);
         if (!transient) throw error;
         lastError = error;
@@ -96,18 +107,28 @@ export class YooKassaPaymentGateway implements PaymentGateway {
     };
   }
   private body(i: CreatePaymentInput, recurring: boolean) {
-    return JSON.stringify({
-      amount: { value: (i.amountMinor / 100).toFixed(2), currency: i.currency },
+    const body = {
+      amount: {
+        value: (i.amountMinor / 100).toFixed(2),
+        currency: i.currency,
+      },
       capture: true,
       description: i.description,
       metadata: i.metadata,
       ...(recurring
         ? { payment_method_id: i.paymentMethodId }
         : {
-            confirmation: { type: 'redirect', return_url: i.returnUrl },
+            confirmation: {
+              type: 'redirect',
+              return_url: i.returnUrl,
+            },
             save_payment_method: i.savePaymentMethod,
           }),
-    });
+    };
+
+    console.log('YOOKASSA BODY:', JSON.stringify(body));
+
+    return JSON.stringify(body);
   }
   async createInitialPayment(i: CreatePaymentInput) {
     return this.map(
