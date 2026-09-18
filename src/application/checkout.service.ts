@@ -14,7 +14,10 @@ import type { PaymentGateway } from '../infrastructure/payments/payment-gateway.
 import { ConflictError, NotFoundError, PaymentError, ValidationError } from '../shared/errors.js';
 import { hashToken, newId, newToken } from '../shared/utils.js';
 export class CheckoutService {
-  private readonly inFlight = new Map<string, Promise<{ publicId: string; confirmationUrl: string }>>();
+  private readonly inFlight = new Map<
+    string,
+    Promise<{ publicId: string; confirmationUrl: string }>
+  >();
   constructor(
     private readonly env: Env,
     private readonly plans: ReadonlyMap<PlanId, Plan>,
@@ -79,17 +82,34 @@ export class CheckoutService {
     let checkout;
     try {
       checkout = await CheckoutModel.create({
-        publicId, userId, planId, amountMinor: plan.amountMinor, currency: plan.currency,
-        status: 'created', activeCheckoutKey, offerVersion: this.env.OFFER_VERSION,
-        offerAcceptedAt: now, privacyAcceptedAt: now,
+        publicId,
+        userId,
+        planId,
+        amountMinor: plan.amountMinor,
+        currency: plan.currency,
+        status: 'created',
+        activeCheckoutKey,
+        offerVersion: this.env.OFFER_VERSION,
+        offerAcceptedAt: now,
+        privacyAcceptedAt: now,
         ...(plan.autoRenewSupported ? { autoRenewAcceptedAt: now } : {}),
-        ip: consent.ip, userAgent: consent.userAgent,
+        ip: consent.ip,
+        userAgent: consent.userAgent,
       });
     } catch (error) {
-      if (typeof error === 'object' && error !== null && 'code' in error && (error as { code?: number }).code === 11000) {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        (error as { code?: number }).code === 11000
+      ) {
         let concurrent = await CheckoutModel.findOne({ activeCheckoutKey });
         // The winner may still be waiting for YooKassa. Briefly poll the local record only.
-        for (let attempt = 0; concurrent && !concurrent.confirmationUrl && attempt < 20; attempt++) {
+        for (
+          let attempt = 0;
+          concurrent && !concurrent.confirmationUrl && attempt < 20;
+          attempt++
+        ) {
           await new Promise((resolve) => setTimeout(resolve, 50));
           concurrent = await CheckoutModel.findOne({ activeCheckoutKey });
         }
@@ -141,7 +161,9 @@ export class CheckoutService {
         currency: 'RUB',
         description: `${this.env.PROJECT_NAME}: ${plan.title}`,
         returnUrl: returnUrl.toString(),
-        savePaymentMethod: plan.autoRenewSupported,
+        // savePaymentMethod: plan.autoRenewSupported,
+        savePaymentMethod: false,
+
         metadata: {
           paymentId: internalId,
           checkoutSessionId: String(checkout._id),
@@ -244,7 +266,13 @@ export class CheckoutService {
       if (!plan) throw new NotFoundError('Тариф не найден');
       let subscription = await SubscriptionModel.findOne({ userId: user._id }).session(session);
       const previousEnd = subscription?.currentPeriodEnd ?? undefined;
-      const terms = subscriptionTerms(plan, now, previousEnd, Boolean(payment.paymentMethodId), true);
+      const terms = subscriptionTerms(
+        plan,
+        now,
+        previousEnd,
+        Boolean(payment.paymentMethodId),
+        true,
+      );
       if (subscription) {
         subscription.set({
           planId: plan.id,

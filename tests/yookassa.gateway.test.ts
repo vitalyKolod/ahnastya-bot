@@ -41,7 +41,7 @@ describe('YooKassa initial payment', () => {
       amount: { value: '1990.00', currency: 'RUB' },
       capture: true,
       confirmation: { type: 'redirect', return_url: 'https://app.example/payment/return' },
-      save_payment_method: false,
+      save_payment_method: true,
       metadata: { internalPaymentId: 'internal-payment' },
     });
     expect(result.confirmationUrl).toBe('https://yookassa.example/confirmation');
