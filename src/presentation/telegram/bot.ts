@@ -1,4 +1,7 @@
-import { InlineKeyboard, type Bot, type Context } from 'grammy';
+import { InlineKeyboard, InputFile, type Bot, type Context } from 'grammy';
+import { readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import type { Logger } from 'pino';
 import type { Env } from '../../config/env.js';
 import type { Plan, PlanId } from '../../config/plans.js';
@@ -62,7 +65,7 @@ export function createBot(
     );
   }
 
-  async function render(ctx: Context, text: string, keyboard: InlineKeyboard) {
+  async function render(ctx: Context, text: string, keyboard: InlineKeyboard, editOnly = false) {
     const user = await identify(ctx);
     const options = { parse_mode: 'HTML' as const, reply_markup: keyboard };
     if (ctx.callbackQuery?.message) {
@@ -75,9 +78,12 @@ export function createBot(
         return;
       } catch (error) {
         if (isNotModified(error)) return;
+        if (editOnly) throw error;
         logger.warn({ event: 'telegram.screen_edit_failed', err: error });
         await ctx.deleteMessage().catch(() => undefined);
       }
+    } else if (editOnly) {
+      throw new Error('Expected a callback message to edit');
     } else if (user?.uiMessageId && ctx.chat) {
       await ctx.api.deleteMessage(ctx.chat.id, user.uiMessageId).catch(() => undefined);
     }
@@ -312,22 +318,57 @@ export function createBot(
   });
   bot.callbackQuery('welcome', showWelcome);
   bot.callbackQuery('plans', showPlans);
-  bot.callbackQuery(/^plan:(month|three_months|lifetime)$/, async (ctx) => {
-    const plan = plans.get(ctx.match[1] as PlanId);
+  const docsDirectory = fileURLToPath(new URL('../../../public/docs/', import.meta.url));
+  const documentFiles = readdirSync(docsDirectory);
+  function documentPath(prefix: '01' | '02') {
+    const matches = documentFiles.filter(
+      (name) => name.startsWith(prefix) && name.toLowerCase().endsWith('.pdf'),
+    );
+    if (matches.length !== 1)
+      throw new Error(`Expected one PDF with prefix ${prefix} in ${docsDirectory}`);
+    return join(docsDirectory, matches[0]!);
+  }
+  const offerPdf = documentPath('01');
+  const consentPdf = documentPath('02');
+  const planKeyboard = (planId: PlanId) =>
+    new InlineKeyboard()
+      .text('📄 Документы', `documents:${planId}`)
+      .row()
+      .text('💳 Оплатить', `accept:${planId}`);
+  async function showPlan(ctx: Context, planId: PlanId) {
+    const plan = plans.get(planId);
     if (!plan?.enabled) return void (await showPlans(ctx));
     const user = await identify(ctx);
     if (user) await purchaseIntents.selectPlan(user._id, plan.id);
     await render(
       ctx,
       ru.planDetails(plan.title, minorToRub(plan.amountMinor), plan.lifetime),
-      new InlineKeyboard()
-        .url('Оферта', env.OFFER_URL)
-        .url('Конфиденциальность', env.PRIVACY_URL)
-        .row()
-        .text(' ПРИНИМАЮ УСЛОВИЯ', `accept:${plan.id}`)
-        .row()
-        .text('← Назад', 'plans'),
+      planKeyboard(plan.id),
+      true,
     );
+  }
+  bot.callbackQuery(/^plan:(month|three_months|lifetime)$/, (ctx) =>
+    showPlan(ctx, ctx.match[1] as PlanId),
+  );
+  bot.callbackQuery(/^documents:(month|three_months|lifetime)$/, async (ctx) => {
+    const planId = ctx.match[1] as PlanId;
+    if (!plans.get(planId)?.enabled) return void (await showPlans(ctx));
+    await render(
+      ctx,
+      'Выберите документ 👇',
+      new InlineKeyboard()
+        .text('Оферта о предоставлении доступа', `document:01:${planId}`)
+        .row()
+        .text('Согласие на обработку персональных данных', `document:02:${planId}`)
+        .row()
+        .text('← Назад', `plan:${planId}`),
+      true,
+    );
+  });
+  bot.callbackQuery(/^document:(01|02):(month|three_months|lifetime)$/, async (ctx) => {
+    if (!plans.get(ctx.match[2] as PlanId)?.enabled || !ctx.chat) return;
+    const path = ctx.match[1] === '01' ? offerPdf : consentPdf;
+    await ctx.api.sendDocument(ctx.chat.id, new InputFile(path));
   });
   bot.callbackQuery(/^accept:(month|three_months|lifetime)$/, async (ctx) => {
     const planId = ctx.match[1] as PlanId;

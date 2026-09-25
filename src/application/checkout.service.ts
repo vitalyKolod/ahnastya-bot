@@ -30,6 +30,8 @@ export class CheckoutService {
     consent: {
       offer: boolean;
       privacy: boolean;
+      personalDataConsentAcceptedAt?: Date;
+      personalDataConsentUrl?: string;
       autoRenew: boolean;
       ip?: string;
       userAgent?: string;
@@ -51,6 +53,8 @@ export class CheckoutService {
     consent: {
       offer: boolean;
       privacy: boolean;
+      personalDataConsentAcceptedAt?: Date;
+      personalDataConsentUrl?: string;
       autoRenew: boolean;
       ip?: string;
       userAgent?: string;
@@ -92,6 +96,8 @@ export class CheckoutService {
         offerVersion: this.env.OFFER_VERSION,
         offerAcceptedAt: now,
         privacyAcceptedAt: now,
+        personalDataConsentAcceptedAt: consent.personalDataConsentAcceptedAt,
+        personalDataConsentUrl: consent.personalDataConsentUrl,
         ...(plan.autoRenewSupported ? { autoRenewAcceptedAt: now } : {}),
         ip: consent.ip,
         userAgent: consent.userAgent,

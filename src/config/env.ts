@@ -35,6 +35,10 @@ const schema = z.object({
   OFFER_URL: z.string().url(),
   OFFER_VERSION: z.string().min(1),
   PRIVACY_URL: z.string().url(),
+  CONSENT_URL: z
+    .string()
+    .url()
+    .default('https://telegra.ph/Soglasie-na-obrabotku-personalnyh-dannyh-09-25-42'),
   PAYMENT_MODE: z.literal('yookassa_external'),
   YOOKASSA_SHOP_ID: z.string().min(1),
   YOOKASSA_SECRET_KEY: z.string().min(1),
