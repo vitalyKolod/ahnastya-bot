@@ -71,7 +71,7 @@ export class CheckoutService {
       {
         activeCheckoutKey,
         status: { $in: ['created', 'payment_pending'] },
-        createdAt: { $lte: freshAfter },
+        $or: [{ createdAt: { $lte: freshAfter } }, { amountMinor: { $ne: plan.amountMinor } }],
       },
       { $set: { status: 'expired' }, $unset: { activeCheckoutKey: 1 } },
     );
@@ -79,6 +79,7 @@ export class CheckoutService {
       activeCheckoutKey,
       status: { $in: ['created', 'payment_pending'] },
       createdAt: { $gt: freshAfter },
+      amountMinor: plan.amountMinor,
     });
     if (existing?.confirmationUrl)
       return { publicId: existing.publicId, confirmationUrl: existing.confirmationUrl };
