@@ -2,7 +2,7 @@ import 'dotenv/config';
 import pino from 'pino';
 import { Bot } from 'grammy';
 import { loadEnv } from '../config/env.js';
-import { createPlans } from '../config/plans.js';
+import { loadPlans } from '../config/plans.js';
 import { connectDatabase, closeDatabase } from '../infrastructure/db/connection.js';
 import { YooKassaPaymentGateway } from '../infrastructure/payments/yookassa.gateway.js';
 import { CheckoutService } from '../application/checkout.service.js';
@@ -34,8 +34,8 @@ async function main() {
       censor: '[REDACTED]',
     },
   });
-  const plans = createPlans(env);
   await connectDatabase(env.MONGODB_URI, logger);
+  const plans = await loadPlans(env);
   const gateway = new YooKassaPaymentGateway(
     env.YOOKASSA_SHOP_ID,
     env.YOOKASSA_SECRET_KEY,
@@ -63,7 +63,7 @@ async function main() {
     env.INVITE_RATE_LIMIT_MINUTES,
     logger,
   );
-  const admin = new AdminService();
+  const admin = new AdminService(plans);
   const broadcast = new BroadcastService(api, logger);
   const gallery = new AboutGalleryService(logger);
   const purchaseIntents = new PurchaseIntentService(env, logger);

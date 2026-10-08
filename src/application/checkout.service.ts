@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import type { Logger } from 'pino';
 import type { Env } from '../config/env.js';
-import { subscriptionTerms, type Plan, type PlanId } from '../config/plans.js';
+import { planForCheckout, subscriptionTerms, type Plan, type PlanId } from '../config/plans.js';
 import {
   CheckoutModel,
   PaymentModel,
@@ -74,6 +74,9 @@ export class CheckoutService {
         $or: [
           { createdAt: { $lte: freshAfter } },
           { amountMinor: { $ne: plan.amountMinor } },
+          { planTitle: { $ne: plan.title } },
+          { planDurationMonths: { $ne: plan.durationMonths } },
+          { planLifetime: { $ne: plan.lifetime } },
           ...(plan.autoRenewSupported ? [{ savePaymentMethodRequested: { $ne: true } }] : []),
         ],
       },
@@ -84,6 +87,9 @@ export class CheckoutService {
       status: { $in: ['created', 'payment_pending'] },
       createdAt: { $gt: freshAfter },
       amountMinor: plan.amountMinor,
+      planTitle: plan.title,
+      planDurationMonths: plan.durationMonths,
+      planLifetime: plan.lifetime,
       ...(plan.autoRenewSupported ? { savePaymentMethodRequested: true } : {}),
     });
     if (existing?.confirmationUrl)
@@ -97,6 +103,10 @@ export class CheckoutService {
         planId,
         amountMinor: plan.amountMinor,
         currency: plan.currency,
+        planTitle: plan.title,
+        planDurationMonths: plan.durationMonths,
+        planLifetime: plan.lifetime,
+        planAutoRenewSupported: plan.autoRenewSupported,
         status: 'created',
         activeCheckoutKey,
         offerVersion: this.env.OFFER_VERSION,
@@ -274,12 +284,13 @@ export class CheckoutService {
         { new: true, session },
       );
       if (!payment) throw new ConflictError('Платёж уже привязан');
-      const plan = this.plans.get(checkout.planId as PlanId);
+      const plan = this.plans.get(checkout.planId);
       if (!plan) throw new NotFoundError('Тариф не найден');
+      const purchasedPlan = planForCheckout(plan, checkout);
       let subscription = await SubscriptionModel.findOne({ userId: user._id }).session(session);
       const previousEnd = subscription?.currentPeriodEnd ?? undefined;
       const terms = subscriptionTerms(
-        plan,
+        purchasedPlan,
         now,
         previousEnd,
         Boolean(payment.paymentMethodId),
@@ -288,6 +299,9 @@ export class CheckoutService {
       if (subscription) {
         subscription.set({
           planId: plan.id,
+          planTitle: purchasedPlan.title,
+          renewalAmountMinor: payment.amountMinor,
+          renewalPeriodMonths: purchasedPlan.renewalPeriodMonths ?? undefined,
           status: 'active',
           currentPeriodStart: terms.currentPeriodStart,
           currentPeriodEnd: terms.currentPeriodEnd,
@@ -306,6 +320,9 @@ export class CheckoutService {
             {
               userId: user._id,
               planId: plan.id,
+              planTitle: purchasedPlan.title,
+              renewalAmountMinor: payment.amountMinor,
+              renewalPeriodMonths: purchasedPlan.renewalPeriodMonths ?? undefined,
               status: 'active',
               startedAt: now,
               currentPeriodStart: terms.currentPeriodStart,
@@ -329,7 +346,7 @@ export class CheckoutService {
         subscriptionId: subscription.id,
         userId: user.id,
       });
-      return { user, subscription, plan };
+      return { user, subscription, plan: purchasedPlan };
     });
   }
 }

@@ -18,6 +18,7 @@ import type { PaymentService } from '../../application/payment.service.js';
 import type { AboutGalleryService } from '../../application/about-gallery.service.js';
 import type { PurchaseIntentService } from '../../application/purchase-intent.service.js';
 import { shouldStartPurchaseIntent } from '../../application/purchase-intent.service.js';
+import { registerAdminPanel } from './admin-panel.js';
 
 const fmt = formatUserDate;
 const isNotModified = (error: unknown) =>
@@ -120,15 +121,7 @@ export function createBot(
       if (plan.enabled)
         keyboard.text(`${plan.title} — ${minorToRub(plan.amountMinor)}`, `plan:${plan.id}`).row();
     keyboard.text('← Назад', 'welcome');
-    await render(
-      ctx,
-      ru.plans(
-        minorToRub(plans.get('month')!.amountMinor),
-        minorToRub(plans.get('three_months')!.amountMinor),
-        minorToRub(plans.get('lifetime')!.amountMinor),
-      ),
-      keyboard,
-    );
+    await render(ctx, ru.plans([...plans.values()].filter((plan) => plan.enabled)), keyboard);
   }
   async function showGallery(ctx: Context) {
     const richMessage = await gallery.buildRichMessage();
@@ -160,7 +153,7 @@ export function createBot(
       );
       return;
     }
-    const plan = plans.get(sub.planId as PlanId);
+    const plan = plans.get(sub.planId);
     const keyboard = new InlineKeyboard().text('📲 ПЕРЕЙТИ В КАНАЛ', 'invite').row();
     if (sub.autoRenew && !sub.lifetime)
       keyboard.text('Отключить автопродление и отвязать карту', 'cancel').row();
@@ -170,9 +163,13 @@ export function createBot(
       ctx,
       ru.subscription(
         sub.status,
-        plan?.title ?? sub.planId,
+        sub.planTitle ?? plan?.title ?? sub.planId,
         sub.currentPeriodEnd ? fmt(sub.currentPeriodEnd, env.BUSINESS_TIMEZONE) : null,
-        plan ? minorToRub(plan.amountMinor) : '—',
+        sub.renewalAmountMinor != null
+          ? minorToRub(sub.renewalAmountMinor)
+          : plan
+            ? minorToRub(plan.amountMinor)
+            : '—',
         sub.autoRenew,
         sub.lifetime,
       ),
@@ -259,12 +256,12 @@ export function createBot(
     const user = await identify(ctx);
     const sub = user ? await subscriptions.getForUser(user._id) : null;
     if (sub?.status === 'active') {
-      const plan = plans.get(sub.planId as PlanId);
+      const plan = plans.get(sub.planId);
       await render(
         ctx,
         ru.active(
           escapeHtml(ctx.from.first_name),
-          plan?.title ?? sub.planId,
+          sub.planTitle ?? plan?.title ?? sub.planId,
           sub.currentPeriodEnd ? fmt(sub.currentPeriodEnd, env.BUSINESS_TIMEZONE) : null,
           sub.autoRenew,
           sub.lifetime,
@@ -302,14 +299,7 @@ export function createBot(
       reply_markup: new InlineKeyboard().url('Открыть политику', env.PRIVACY_URL),
     }),
   );
-  bot.command('admin', async (ctx) => {
-    if (!ctx.from || !env.ADMIN_IDS.includes(ctx.from.id)) return;
-    const s = await admin.stats();
-    await ctx.reply(
-      `<b>Панель администратора</b>\n\nПользователей: ${s.users}\nАктивных: ${s.active}\nPast due: ${s.pastDue}\nExpired: ${s.expired}\nАвтопродление: ${s.autoRenew}\nВыручка месяца: ${minorToRub(s.revenueMinor)}\n\nРассылка: <code>/broadcast текст</code>`,
-      { parse_mode: 'HTML' },
-    );
-  });
+  registerAdminPanel(bot, env, admin, render);
   bot.command('broadcast', async (ctx) => {
     if (!ctx.from || !env.ADMIN_IDS.includes(ctx.from.id)) return;
     const text = ctx.match.trim();
@@ -366,11 +356,9 @@ export function createBot(
       true,
     );
   }
-  bot.callbackQuery(/^plan:(month|three_months|lifetime)$/, (ctx) =>
-    showPlan(ctx, ctx.match[1] as PlanId),
-  );
-  bot.callbackQuery(/^documents:(month|three_months|lifetime)$/, async (ctx) => {
-    const planId = ctx.match[1] as PlanId;
+  bot.callbackQuery(/^plan:([a-z0-9_]{1,32})$/, (ctx) => showPlan(ctx, ctx.match[1]!));
+  bot.callbackQuery(/^documents:([a-z0-9_]{1,32})$/, async (ctx) => {
+    const planId = ctx.match[1]!;
     if (!plans.get(planId)?.enabled) return void (await showPlans(ctx));
     await render(
       ctx,
@@ -384,12 +372,11 @@ export function createBot(
       true,
     );
   });
-  bot.callbackQuery(/^document:(01|02):(month|three_months|lifetime)$/, async (ctx) => {
-    if (!plans.get(ctx.match[2] as PlanId)?.enabled || !ctx.chat) return;
+  bot.callbackQuery(/^document:(01|02):([a-z0-9_]{1,32})$/, async (ctx) => {
+    if (!plans.get(ctx.match[2]!)?.enabled || !ctx.chat) return;
     const documentId = ctx.match[1]!;
     const key = `${ctx.chat.id}:${documentId}`;
-    if (sendingDocuments.has(key) || Date.now() - (lastDocumentSentAt.get(key) ?? 0) < 5000)
-      return;
+    if (sendingDocuments.has(key) || Date.now() - (lastDocumentSentAt.get(key) ?? 0) < 5000) return;
     sendingDocuments.add(key);
     try {
       const path = documentId === '01' ? offerPdf : consentPdf;
@@ -403,8 +390,8 @@ export function createBot(
       sendingDocuments.delete(key);
     }
   });
-  bot.callbackQuery(/^accept:(month|three_months|lifetime)$/, async (ctx) => {
-    const planId = ctx.match[1] as PlanId;
+  bot.callbackQuery(/^accept:([a-z0-9_]{1,32})$/, async (ctx) => {
+    const planId = ctx.match[1]!;
     const plan = plans.get(planId);
     const user = await identify(ctx);
     if (!plan?.enabled || !user) return;

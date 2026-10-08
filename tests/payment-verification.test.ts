@@ -40,13 +40,25 @@ describe('authoritative YooKassa payment verification', () => {
     expect(() => assertVerifiedPayment(remote, expected, plan)).not.toThrow();
   });
 
+  it('accepts a previously created payment after the tariff price changes', () => {
+    expect(() =>
+      assertVerifiedPayment(remote, expected, { ...plan, amountMinor: 99000 }),
+    ).not.toThrow();
+  });
+
   it.each([
     ['wrong amount', { amountMinor: 9999 }],
     ['wrong currency', { currency: 'USD' }],
     ['token/session bound to another payment', { id: 'provider-2' }],
     ['wrong plan', { metadata: { ...remote.metadata, planId: 'three_months' } }],
-    ['wrong internal payment id', { metadata: { ...remote.metadata, internalPaymentId: 'internal-2' } }],
-    ['wrong checkout session id', { metadata: { ...remote.metadata, checkoutSessionId: 'checkout-2' } }],
+    [
+      'wrong internal payment id',
+      { metadata: { ...remote.metadata, internalPaymentId: 'internal-2' } },
+    ],
+    [
+      'wrong checkout session id',
+      { metadata: { ...remote.metadata, checkoutSessionId: 'checkout-2' } },
+    ],
   ])('rejects %s', (_name, override) => {
     expect(() => assertVerifiedPayment({ ...remote, ...override }, expected, plan)).toThrow(
       'Verified payment data mismatch',

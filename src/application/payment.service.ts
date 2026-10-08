@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import type { Logger } from 'pino';
-import { subscriptionTerms, type Plan, type PlanId } from '../config/plans.js';
+import { planForCheckout, subscriptionTerms, type Plan, type PlanId } from '../config/plans.js';
 import { calculatePeriod, addGrace } from '../domain/subscription/period.js';
 import {
   CheckoutModel,
@@ -70,7 +70,6 @@ export function assertVerifiedPayment(
     remote.id !== expected.providerPaymentId ||
     !plan ||
     remote.amountMinor !== expected.amountMinor ||
-    remote.amountMinor !== plan.amountMinor ||
     remote.currency !== expected.currency ||
     remote.metadata.internalPaymentId !== expected.internalPaymentId ||
     remote.metadata.planId !== expected.planId ||
@@ -180,7 +179,9 @@ export class PaymentService {
       status: 'pending',
       verificationPending: true,
       nextVerificationAt: { $lte: now },
-    }).select({ providerPaymentId: 1 }).limit(100);
+    })
+      .select({ providerPaymentId: 1 })
+      .limit(100);
     const results: Array<{
       providerPaymentId: string;
       result: ProcessPaymentResult & { notificationKey?: string };
@@ -202,16 +203,23 @@ export class PaymentService {
       let delayedUiTarget: PaymentUiTarget | undefined;
       if (processed.status === 'pending') {
         const delayed = await PaymentModel.findOneAndUpdate(
-          { _id: payment._id, status: 'pending', verificationPending: true,
+          {
+            _id: payment._id,
+            status: 'pending',
+            verificationPending: true,
             verificationNoticeSentAt: null,
-            verificationStartedAt: { $lte: new Date(now.getTime() - 60_000) } },
+            verificationStartedAt: { $lte: new Date(now.getTime() - 60_000) },
+          },
           { $set: { verificationNoticeSentAt: now } },
           { new: true },
         );
         if (delayed?.processingUiMessageId) {
           const user = delayed.userId ? await UserModel.findById(delayed.userId) : null;
-          if (user) delayedUiTarget = { telegramId: user.telegramId,
-            processingUiMessageId: delayed.processingUiMessageId };
+          if (user)
+            delayedUiTarget = {
+              telegramId: user.telegramId,
+              processingUiMessageId: delayed.processingUiMessageId,
+            };
         }
       }
       results.push({
@@ -290,7 +298,11 @@ export class PaymentService {
       },
     );
   }
-  async scheduleSuccessNotificationRetry(notificationKey: string, error: unknown, now = new Date()) {
+  async scheduleSuccessNotificationRetry(
+    notificationKey: string,
+    error: unknown,
+    now = new Date(),
+  ) {
     const pending = await NotificationModel.findOne({ dedupKey: notificationKey, sentAt: null });
     if (!pending) return null;
     const attempt = (pending.attemptCount ?? 0) + 1;
@@ -356,7 +368,7 @@ export class PaymentService {
           })
         : null;
       const user = payment?.userId ? await UserModel.findById(payment.userId) : null;
-      const plan = payment ? this.plans.get(payment.planId as PlanId) : undefined;
+      const plan = payment ? this.plans.get(payment.planId) : undefined;
       if (!payment?.providerPaymentId || !user || !plan) {
         await this.markSuccessNotificationFailed(claimed.dedupKey, 'Notification binding missing');
         continue;
@@ -375,8 +387,8 @@ export class PaymentService {
           telegramId: user.telegramId,
           planCode: plan.id,
           ...(purchaseIntent ? { purchaseIntentId: String(purchaseIntent._id) } : {}),
-          planTitle: plan.title,
-          amountMinor: plan.amountMinor,
+          planTitle: subscription.planTitle ?? plan.title,
+          amountMinor: payment.amountMinor,
           currentPeriodEnd: subscription.currentPeriodEnd ?? null,
           autoRenew: subscription.autoRenew,
           lifetime: subscription.lifetime,
@@ -465,7 +477,10 @@ export class PaymentService {
           { _id: payment._id, status: 'pending' },
           { $set: { verificationPending: false }, $unset: { nextVerificationAt: 1 } },
         );
-        this.logger.warn({ event: 'payment.verification.exhausted', paymentId: payment.internalId });
+        this.logger.warn({
+          event: 'payment.verification.exhausted',
+          paymentId: payment.internalId,
+        });
         return { status: 'pending' };
       }
       const attempt = (payment.verificationAttempts ?? 0) + 1;
@@ -479,13 +494,21 @@ export class PaymentService {
           $inc: { verificationAttempts: 1 },
         },
       );
-      this.logger.warn({ event: 'payment.verification.transient_error', paymentId: payment.internalId, err: error });
-      this.logger.info({ event: 'payment.verification.retry_scheduled', paymentId: payment.internalId, nextVerificationAt });
+      this.logger.warn({
+        event: 'payment.verification.transient_error',
+        paymentId: payment.internalId,
+        err: error,
+      });
+      this.logger.info({
+        event: 'payment.verification.retry_scheduled',
+        paymentId: payment.internalId,
+        nextVerificationAt,
+      });
       return { status: 'pending' };
     }
     const payment = await PaymentModel.findOne({ providerPaymentId: remote.id });
     if (!payment) throw new NotFoundError('Unknown provider payment');
-    const plan = this.plans.get(payment.planId as PlanId);
+    const plan = this.plans.get(payment.planId);
     const [paymentUser, purchaseIntent] = await Promise.all([
       payment.userId ? UserModel.findById(payment.userId).select({ telegramId: 1 }).lean() : null,
       PurchaseIntentModel.findOne({ paymentId: payment._id }).select({ _id: 1 }).lean(),
@@ -513,9 +536,15 @@ export class PaymentService {
       if (Date.now() - verificationStartedAt.getTime() >= 6 * 60 * 60_000) {
         await PaymentModel.updateOne(
           { _id: payment._id, status: 'pending' },
-          { $set: { verificationPending: false, providerStatus: remote.status }, $unset: { nextVerificationAt: 1 } },
+          {
+            $set: { verificationPending: false, providerStatus: remote.status },
+            $unset: { nextVerificationAt: 1 },
+          },
         );
-        this.logger.warn({ event: 'payment.verification.exhausted', paymentId: payment.internalId });
+        this.logger.warn({
+          event: 'payment.verification.exhausted',
+          paymentId: payment.internalId,
+        });
         return { status: 'pending' };
       }
       const attempt = (payment.verificationAttempts ?? 0) + 1;
@@ -535,12 +564,19 @@ export class PaymentService {
           $inc: { verificationAttempts: 1 },
         },
       );
-      this.logger.info({ event: 'payment.verification.retry_scheduled', paymentId: payment.internalId, nextVerificationAt });
+      this.logger.info({
+        event: 'payment.verification.retry_scheduled',
+        paymentId: payment.internalId,
+        nextVerificationAt,
+      });
       return { status: 'pending' as const };
     }
     await PaymentModel.updateOne(
       { _id: payment._id },
-      { $set: { verificationPending: false, providerStatus: remote.status }, $unset: { nextVerificationAt: 1 } },
+      {
+        $set: { verificationPending: false, providerStatus: remote.status },
+        $unset: { nextVerificationAt: 1 },
+      },
     );
     if (eventType === 'canceled' || !remote.paid || remote.status !== 'succeeded') {
       await PaymentModel.updateOne(
@@ -610,8 +646,8 @@ export class PaymentService {
             telegramId: user.telegramId,
             planCode: plan.id,
             ...(purchaseIntent ? { purchaseIntentId: String(purchaseIntent._id) } : {}),
-            planTitle: plan.title,
-            amountMinor: plan.amountMinor,
+            planTitle: subscription?.planTitle ?? plan.title,
+            amountMinor: payment.amountMinor,
             currentPeriodEnd: subscription.currentPeriodEnd ?? null,
             autoRenew: subscription.autoRenew,
             lifetime: subscription.lifetime,
@@ -631,10 +667,11 @@ export class PaymentService {
       this.logger.info({ event: 'subscription.activation.started', ...logContext });
       const subscription = await SubscriptionModel.findById(payment.subscriptionId);
       if (!subscription) throw new NotFoundError('Renewal subscription not found');
-      if (plan.renewalPeriodMonths === null || subscription.lifetime)
+      const renewalMonths = subscription.renewalPeriodMonths ?? plan.renewalPeriodMonths;
+      if (renewalMonths === null || subscription.lifetime)
         throw new PaymentError('Lifetime subscription cannot be renewed');
       if (!subscription.currentPeriodEnd) throw new PaymentError('Renewal period is missing');
-      const period = calculatePeriod(now, plan.renewalPeriodMonths, subscription.currentPeriodEnd);
+      const period = calculatePeriod(now, renewalMonths, subscription.currentPeriodEnd);
       await SubscriptionModel.updateOne(
         { _id: subscription._id, currentPeriodEnd: subscription.currentPeriodEnd },
         {
@@ -682,8 +719,9 @@ export class PaymentService {
         session,
       );
       if (!checkout) throw new NotFoundError('Payment checkout not found');
+      const purchasedPlan = planForCheckout(plan, checkout);
       const terms = subscriptionTerms(
-        plan,
+        purchasedPlan,
         now,
         subscription?.currentPeriodEnd ?? undefined,
         Boolean(currentPayment.paymentMethodId),
@@ -693,6 +731,9 @@ export class PaymentService {
       if (subscription) {
         subscription.set({
           planId: plan.id,
+          planTitle: purchasedPlan.title,
+          renewalAmountMinor: currentPayment.amountMinor,
+          renewalPeriodMonths: purchasedPlan.renewalPeriodMonths ?? undefined,
           status: 'active',
           currentPeriodStart: terms.currentPeriodStart,
           currentPeriodEnd: terms.currentPeriodEnd,
@@ -711,6 +752,9 @@ export class PaymentService {
             {
               userId: user._id,
               planId: plan.id,
+              planTitle: purchasedPlan.title,
+              renewalAmountMinor: currentPayment.amountMinor,
+              renewalPeriodMonths: purchasedPlan.renewalPeriodMonths ?? undefined,
               status: 'active',
               startedAt: now,
               currentPeriodStart: terms.currentPeriodStart,
@@ -749,8 +793,8 @@ export class PaymentService {
         telegramId: user.telegramId,
         planCode: plan.id,
         ...(purchaseIntent ? { purchaseIntentId: String(purchaseIntent._id) } : {}),
-        planTitle: plan.title,
-        amountMinor: plan.amountMinor,
+        planTitle: purchasedPlan.title,
+        amountMinor: currentPayment.amountMinor,
         currentPeriodEnd: subscription.currentPeriodEnd ?? null,
         autoRenew: subscription.autoRenew,
         lifetime: subscription.lifetime,
@@ -786,8 +830,8 @@ export class PaymentService {
           telegramId: user.telegramId,
           planCode: plan.id,
           ...(purchaseIntent ? { purchaseIntentId: String(purchaseIntent._id) } : {}),
-          planTitle: plan.title,
-          amountMinor: plan.amountMinor,
+          planTitle: subscription.planTitle ?? plan.title,
+          amountMinor: payment.amountMinor,
           currentPeriodEnd: subscription.currentPeriodEnd ?? null,
           autoRenew: subscription.autoRenew,
           lifetime: subscription.lifetime,

@@ -272,8 +272,22 @@ export class SchedulerService {
   private async renewals() {
     const due = await SubscriptionModel.find(recurringDueFilter()).limit(100);
     for (const sub of due) {
-      const plan = this.plans.get(sub.planId as PlanId);
-      if (!plan || plan.lifetime || !plan.renewalPeriodMonths || !sub.currentPeriodEnd) continue;
+      const plan = this.plans.get(sub.planId);
+      if (
+        !plan ||
+        sub.lifetime ||
+        !(sub.renewalPeriodMonths ?? plan.renewalPeriodMonths) ||
+        !sub.currentPeriodEnd
+      )
+        continue;
+      const lastPayment =
+        sub.renewalAmountMinor == null
+          ? await PaymentModel.findOne({ subscriptionId: sub._id, status: 'succeeded' })
+              .sort({ paidAt: -1 })
+              .select({ amountMinor: 1 })
+              .lean()
+          : null;
+      const amountMinor = sub.renewalAmountMinor ?? lastPayment?.amountMinor ?? plan.amountMinor;
       let attempt;
       try {
         attempt = await RenewalModel.create({
@@ -299,7 +313,7 @@ export class SchedulerService {
           m.CheckoutModel.create({
             publicId: newId(),
             planId: plan.id,
-            amountMinor: plan.amountMinor,
+            amountMinor,
             currency: 'RUB',
             status: 'payment_pending',
             offerVersion: this.env.OFFER_VERSION,
@@ -314,13 +328,13 @@ export class SchedulerService {
           idempotenceKey: key,
           type: 'renewal',
           planId: plan.id,
-          amountMinor: plan.amountMinor,
+          amountMinor,
           currency: 'RUB',
           status: 'pending',
         });
         const remote = await this.gateway.createRecurringPayment({
           idempotenceKey: key,
-          amountMinor: plan.amountMinor,
+          amountMinor,
           currency: 'RUB',
           description: `Продление ${this.env.PROJECT_NAME}`,
           returnUrl: new URL('/payment/return', this.env.APP_BASE_URL).toString(),

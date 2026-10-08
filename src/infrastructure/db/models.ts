@@ -7,6 +7,20 @@ import {
 } from '../../domain/types.js';
 
 const opts = { timestamps: true, versionKey: false } as const;
+const planSchema = new Schema(
+  {
+    id: { type: String, required: true, unique: true },
+    title: { type: String, required: true },
+    amountMinor: { type: Number, required: true },
+    currency: { type: String, enum: ['RUB'], required: true },
+    durationMonths: { type: Number, default: null },
+    renewalPeriodMonths: { type: Number, default: null },
+    lifetime: { type: Boolean, required: true },
+    autoRenewSupported: { type: Boolean, required: true },
+    enabled: { type: Boolean, required: true },
+  },
+  opts,
+);
 const userSchema = new Schema(
   {
     telegramId: { type: Number, required: true, unique: true },
@@ -28,6 +42,10 @@ const checkoutSchema = new Schema(
     planId: { type: String, required: true },
     amountMinor: { type: Number, required: true },
     currency: { type: String, required: true },
+    planTitle: String,
+    planDurationMonths: Number,
+    planLifetime: Boolean,
+    planAutoRenewSupported: Boolean,
     status: { type: String, enum: checkoutStatuses, required: true, index: true },
     offerVersion: { type: String, required: true },
     offerAcceptedAt: Date,
@@ -117,6 +135,9 @@ const subscriptionSchema = new Schema(
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
     planId: { type: String, required: true },
     status: { type: String, enum: subscriptionStatuses, required: true, index: true },
+    planTitle: String,
+    renewalAmountMinor: Number,
+    renewalPeriodMonths: Number,
     startedAt: { type: Date, required: true },
     currentPeriodStart: { type: Date, required: true },
     currentPeriodEnd: { type: Date, default: null, index: true },
@@ -202,6 +223,7 @@ const auditSchema = new Schema(
   { versionKey: false },
 );
 export const UserModel = model('User', userSchema);
+export const PlanModel = model('Plan', planSchema);
 export const CheckoutModel = model('CheckoutSession', checkoutSchema);
 export const PurchaseIntentModel = model('PurchaseIntent', purchaseIntentSchema);
 export const PaymentModel = model('Payment', paymentSchema);
