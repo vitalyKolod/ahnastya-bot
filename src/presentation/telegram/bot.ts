@@ -120,7 +120,15 @@ export function createBot(
       if (plan.enabled)
         keyboard.text(`${plan.title} — ${minorToRub(plan.amountMinor)}`, `plan:${plan.id}`).row();
     keyboard.text('← Назад', 'welcome');
-    await render(ctx, ru.plans, keyboard);
+    await render(
+      ctx,
+      ru.plans(
+        minorToRub(plans.get('month')!.amountMinor),
+        minorToRub(plans.get('three_months')!.amountMinor),
+        minorToRub(plans.get('lifetime')!.amountMinor),
+      ),
+      keyboard,
+    );
   }
   async function showGallery(ctx: Context) {
     const richMessage = await gallery.buildRichMessage();
@@ -208,6 +216,11 @@ export function createBot(
   }
 
   bot.on('callback_query:data', async (ctx, next) => {
+    if (ctx.callbackQuery.data.startsWith('document:')) {
+      await ctx.answerCallbackQuery({ text: 'Отправляем документ…' }).catch(() => undefined);
+      await next();
+      return;
+    }
     await acknowledgeCallback(ctx, next);
   });
   bot.command('start', async (ctx) => {
@@ -330,11 +343,16 @@ export function createBot(
   }
   const offerPdf = documentPath('01');
   const consentPdf = documentPath('02');
+  const documentFileIds = new Map<string, string>();
+  const sendingDocuments = new Set<string>();
+  const lastDocumentSentAt = new Map<string, number>();
   const planKeyboard = (planId: PlanId) =>
     new InlineKeyboard()
       .text('📄 Документы', `documents:${planId}`)
       .row()
-      .text('💳 Оплатить', `accept:${planId}`);
+      .text('💳 Оплатить', `accept:${planId}`)
+      .row()
+      .text('← Назад', 'plans');
   async function showPlan(ctx: Context, planId: PlanId) {
     const plan = plans.get(planId);
     if (!plan?.enabled) return void (await showPlans(ctx));
@@ -367,8 +385,22 @@ export function createBot(
   });
   bot.callbackQuery(/^document:(01|02):(month|three_months|lifetime)$/, async (ctx) => {
     if (!plans.get(ctx.match[2] as PlanId)?.enabled || !ctx.chat) return;
-    const path = ctx.match[1] === '01' ? offerPdf : consentPdf;
-    await ctx.api.sendDocument(ctx.chat.id, new InputFile(path));
+    const documentId = ctx.match[1]!;
+    const key = `${ctx.chat.id}:${documentId}`;
+    if (sendingDocuments.has(key) || Date.now() - (lastDocumentSentAt.get(key) ?? 0) < 5000)
+      return;
+    sendingDocuments.add(key);
+    try {
+      const path = documentId === '01' ? offerPdf : consentPdf;
+      const sent = await ctx.api.sendDocument(
+        ctx.chat.id,
+        documentFileIds.get(documentId) ?? new InputFile(path),
+      );
+      if (sent.document) documentFileIds.set(documentId, sent.document.file_id);
+      lastDocumentSentAt.set(key, Date.now());
+    } finally {
+      sendingDocuments.delete(key);
+    }
   });
   bot.callbackQuery(/^accept:(month|three_months|lifetime)$/, async (ctx) => {
     const planId = ctx.match[1] as PlanId;
