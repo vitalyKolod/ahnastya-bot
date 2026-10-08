@@ -71,7 +71,11 @@ export class CheckoutService {
       {
         activeCheckoutKey,
         status: { $in: ['created', 'payment_pending'] },
-        $or: [{ createdAt: { $lte: freshAfter } }, { amountMinor: { $ne: plan.amountMinor } }],
+        $or: [
+          { createdAt: { $lte: freshAfter } },
+          { amountMinor: { $ne: plan.amountMinor } },
+          ...(plan.autoRenewSupported ? [{ savePaymentMethodRequested: { $ne: true } }] : []),
+        ],
       },
       { $set: { status: 'expired' }, $unset: { activeCheckoutKey: 1 } },
     );
@@ -80,6 +84,7 @@ export class CheckoutService {
       status: { $in: ['created', 'payment_pending'] },
       createdAt: { $gt: freshAfter },
       amountMinor: plan.amountMinor,
+      ...(plan.autoRenewSupported ? { savePaymentMethodRequested: true } : {}),
     });
     if (existing?.confirmationUrl)
       return { publicId: existing.publicId, confirmationUrl: existing.confirmationUrl };
@@ -100,6 +105,7 @@ export class CheckoutService {
         personalDataConsentAcceptedAt: consent.personalDataConsentAcceptedAt,
         personalDataConsentUrl: consent.personalDataConsentUrl,
         ...(plan.autoRenewSupported ? { autoRenewAcceptedAt: now } : {}),
+        savePaymentMethodRequested: plan.autoRenewSupported,
         ip: consent.ip,
         userAgent: consent.userAgent,
       });
@@ -168,8 +174,7 @@ export class CheckoutService {
         currency: 'RUB',
         description: `${this.env.PROJECT_NAME}: ${plan.title}`,
         returnUrl: returnUrl.toString(),
-        // savePaymentMethod: plan.autoRenewSupported,
-        savePaymentMethod: false,
+        savePaymentMethod: plan.autoRenewSupported,
 
         metadata: {
           paymentId: internalId,

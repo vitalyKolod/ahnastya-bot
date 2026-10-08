@@ -162,7 +162,8 @@ export function createBot(
     }
     const plan = plans.get(sub.planId as PlanId);
     const keyboard = new InlineKeyboard().text('📲 ПЕРЕЙТИ В КАНАЛ', 'invite').row();
-    if (sub.autoRenew && !sub.lifetime) keyboard.text('Отключить автосписания', 'cancel').row();
+    if (sub.autoRenew && !sub.lifetime)
+      keyboard.text('Отключить автопродление и отвязать карту', 'cancel').row();
     addConsultation(keyboard, '💌 КОНСУЛЬТАЦИЯ');
     keyboard.text('← Назад', 'welcome');
     await render(

@@ -35,6 +35,7 @@ const checkoutSchema = new Schema(
     personalDataConsentAcceptedAt: Date,
     personalDataConsentUrl: String,
     autoRenewAcceptedAt: Date,
+    savePaymentMethodRequested: Boolean,
     ip: String,
     userAgent: String,
     providerPaymentId: String,
