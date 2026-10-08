@@ -221,6 +221,7 @@ export function createBot(
     }
     await acknowledgeCallback(ctx, next);
   });
+  const showAdminDashboard = registerAdminPanel(bot, env, admin, render);
   bot.command('start', async (ctx) => {
     if (!ctx.from) return;
     const paymentToken = ctx.match.startsWith('pay_') ? ctx.match.slice(4) : null;
@@ -251,6 +252,10 @@ export function createBot(
         ),
         new InlineKeyboard().text('🔐 ПОЛУЧИТЬ ДОСТУП', 'invite'),
       );
+      return;
+    }
+    if (ctx.chat.type === 'private' && env.ADMIN_IDS.includes(ctx.from.id)) {
+      await showAdminDashboard(ctx);
       return;
     }
     const user = await identify(ctx);
@@ -299,7 +304,6 @@ export function createBot(
       reply_markup: new InlineKeyboard().url('Открыть политику', env.PRIVACY_URL),
     }),
   );
-  registerAdminPanel(bot, env, admin, render);
   bot.command('broadcast', async (ctx) => {
     if (!ctx.from || !env.ADMIN_IDS.includes(ctx.from.id)) return;
     const text = ctx.match.trim();

@@ -142,7 +142,6 @@ export function registerAdminPanel(
     );
   }
 
-  bot.command('admin', dashboard);
   bot.callbackQuery('adm:home', dashboard);
   bot.callbackQuery(/^adm:plans:(\d+)$/, (ctx) => plansPage(ctx, Number(ctx.match[1])));
   bot.callbackQuery(/^adm:plan:([a-z0-9_]{1,32})$/, (ctx) => planPage(ctx, ctx.match[1]!));
@@ -287,4 +286,5 @@ export function registerAdminPanel(
       keyboard,
     );
   });
+  return dashboard;
 }
