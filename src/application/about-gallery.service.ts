@@ -2,7 +2,7 @@ import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { Logger } from 'pino';
 import { InputFile } from 'grammy';
-import type { InputRichBlockPhoto, InputRichBlockSlideshow, InputRichMessage } from 'grammy/types';
+import type { InputRichBlockPhoto, InputRichBlockSlideshow, InputRichMessage, RichMessage } from 'grammy/types';
 
 const IMAGE_NAME = /^(0[1-7])\.(png|jpe?g|webp)$/i;
 
@@ -13,6 +13,7 @@ export interface AboutSlide {
 
 export class AboutGalleryService {
   private slides?: AboutSlide[];
+  private photoFileIds: string[] | undefined;
 
   constructor(
     private readonly logger: Pick<Logger, 'warn'>,
@@ -60,9 +61,9 @@ export class AboutGalleryService {
   async buildRichMessage(): Promise<InputRichMessage | null> {
     const slides = await this.getSlides();
     if (slides.length === 0) return null;
-    const photos: InputRichBlockPhoto[] = slides.map((slide) => ({
+    const photos: InputRichBlockPhoto[] = slides.map((slide, index) => ({
       type: 'photo',
-      photo: { type: 'photo', media: new InputFile(slide.path) },
+      photo: { type: 'photo', media: this.photoFileIds?.[index] ?? new InputFile(slide.path) },
     }));
     const mediaBlock: InputRichBlockPhoto | InputRichBlockSlideshow =
       photos.length === 1 ? photos[0]! : { type: 'slideshow', blocks: photos };
@@ -80,5 +81,14 @@ export class AboutGalleryService {
         },
       ],
     };
+  }
+
+  rememberUploadedPhotos(message: RichMessage) {
+    const media = message.blocks[0];
+    const photos = media?.type === 'slideshow' ? media.blocks : media ? [media] : [];
+    if (photos.length !== this.slides?.length || !photos.every((block) => block.type === 'photo'))
+      return;
+    this.photoFileIds = photos.map((block) => block.type === 'photo' ? block.photo.at(-1)?.file_id ?? '' : '');
+    if (this.photoFileIds.some((id) => !id)) this.photoFileIds = undefined;
   }
 }

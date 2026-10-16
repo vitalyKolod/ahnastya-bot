@@ -124,6 +124,7 @@ export function createBot(
     await render(ctx, ru.plans([...plans.values()].filter((plan) => plan.enabled)), keyboard);
   }
   async function showGallery(ctx: Context) {
+    if (ctx.callbackQuery?.message) await ctx.deleteMessage().catch(() => undefined);
     const richMessage = await gallery.buildRichMessage();
     if (!richMessage) {
       await render(
@@ -133,10 +134,10 @@ export function createBot(
       );
       return;
     }
-    if (ctx.callbackQuery?.message) await ctx.deleteMessage().catch(() => undefined);
     const sent = await ctx.api.sendRichMessage(ctx.chat!.id, richMessage, {
       reply_markup: aboutGalleryKeyboard(),
     });
+    gallery.rememberUploadedPhotos(sent.rich_message);
     const user = await identify(ctx);
     if (user)
       await UserModel.updateOne({ _id: user._id }, { $set: { uiMessageId: sent.message_id } });

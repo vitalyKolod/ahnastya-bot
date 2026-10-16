@@ -46,6 +46,19 @@ describe('about gallery', () => {
     expect(rich?.blocks?.[0]).toMatchObject({ type: 'photo' });
   });
 
+  it('reuses Telegram photo IDs after the first gallery send', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gallery-'));
+    dirs.push(dir);
+    await writeFile(path.join(dir, '01.png'), 'x');
+    const service = new AboutGalleryService({ warn: vi.fn() } as never, dir);
+    await service.buildRichMessage();
+    service.rememberUploadedPhotos({ blocks: [{ type: 'photo', photo: [{ file_id: 'telegram-photo-id' }] }] } as never);
+    expect((await service.buildRichMessage())?.blocks?.[0]).toMatchObject({
+      type: 'photo',
+      photo: { media: 'telegram-photo-id' },
+    });
+  });
+
   it('keeps only plans CTA and back in the inline keyboard', () => {
     expect(aboutGalleryKeyboard().inline_keyboard).toEqual([
       [{ text: '❤️ ХОЧУ В КЛАДОВУЮ', callback_data: 'plans' }],
