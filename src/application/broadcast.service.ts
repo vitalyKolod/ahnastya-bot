@@ -6,13 +6,15 @@ export class BroadcastService {
     private readonly api: Api,
     private readonly logger: Logger,
   ) {}
-  async send(text: string) {
+  async send(messageIds: number[], fromChatId: number) {
     let success = 0,
       failed = 0;
     const cursor = UserModel.find().select({ telegramId: 1 }).cursor();
     for await (const user of cursor) {
       try {
-        await this.api.sendMessage(user.telegramId, text);
+        if (messageIds.length === 1)
+          await this.api.copyMessage(user.telegramId, fromChatId, messageIds[0]!);
+        else await this.api.copyMessages(user.telegramId, fromChatId, messageIds);
         success++;
       } catch (error) {
         failed++;

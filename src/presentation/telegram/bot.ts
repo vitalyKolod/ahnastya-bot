@@ -47,7 +47,9 @@ export function createBot(
   purchaseIntents: PurchaseIntentService,
   logger: Logger,
 ) {
-  const pendingBroadcasts = new Map<number, string>();
+  const pendingBroadcasts = new Map<number, { ids: number[]; group: string | undefined; timer?: ReturnType<typeof setTimeout>; ready: boolean }>();
+  const sendingBroadcasts = new Set<number>();
+  const isAdmin = (ctx: Context) => Boolean(ctx.from && ctx.chat?.type === 'private' && env.ADMIN_IDS.includes(ctx.from.id));
 
   async function identify(ctx: Context) {
     if (!ctx.from) return null;
@@ -99,16 +101,17 @@ export function createBot(
     if (env.CONSULTATION_URL) keyboard.url(label, env.CONSULTATION_URL).row();
     return keyboard;
   };
-  const welcomeKeyboard = () => {
+  const welcomeKeyboard = (ctxAdmin: boolean) => {
     const keyboard = new InlineKeyboard()
       .text('❤️ ПРИСОЕДИНИТЬСЯ', 'plans')
       .row()
       .text('🖇️ ПОДПИСКА', 'subscription')
       .text('🎬 КАК ЭТО ВЫГЛЯДИТ', 'how_it_looks')
       .row();
+    if (ctxAdmin) keyboard.text('🛠 Админ-панель', 'adm:home').row();
     return addConsultation(keyboard);
   };
-  const showWelcome = (ctx: Context) => render(ctx, ru.welcome, welcomeKeyboard());
+  const showWelcome = (ctx: Context) => render(ctx, ru.welcome, welcomeKeyboard(isAdmin(ctx)));
   async function showPlans(ctx: Context) {
     const user = await identify(ctx);
     if (user) {
@@ -305,25 +308,69 @@ export function createBot(
       reply_markup: new InlineKeyboard().url('Открыть политику', env.PRIVACY_URL),
     }),
   );
-  bot.command('broadcast', async (ctx) => {
-    if (!ctx.from || !env.ADMIN_IDS.includes(ctx.from.id)) return;
-    const text = ctx.match.trim();
-    if (!text) return void (await ctx.reply('Добавьте текст после команды.'));
-    await admin.audit(ctx.from.id, 'broadcast.started', undefined, { length: text.length });
-    await ctx.reply(`Предпросмотр:\n\n${text}`, {
-      reply_markup: new InlineKeyboard().text('Подтвердить рассылку', `broadcast:${text.length}`),
-    });
-    pendingBroadcasts.set(ctx.from.id, text);
+  bot.callbackQuery('broadcast:new', async (ctx) => {
+    if (!isAdmin(ctx) || sendingBroadcasts.has(ctx.from.id)) return;
+    const previous = pendingBroadcasts.get(ctx.from.id);
+    if (previous?.timer) clearTimeout(previous.timer);
+    pendingBroadcasts.set(ctx.from.id, { ids: [], group: undefined, ready: false });
+    await render(ctx, '<b>Рассылка</b>\n\nОтправьте текст, фото или видео с подписью. Можно отправить альбом из фото и видео (до 10 файлов). Я покажу предпросмотр перед отправкой всем пользователям.', new InlineKeyboard().text('Отмена', 'broadcast:cancel'));
   });
-  bot.callbackQuery(/^broadcast:(\d+)$/, async (ctx) => {
-    if (!env.ADMIN_IDS.includes(ctx.from.id)) return;
-    const text = pendingBroadcasts.get(ctx.from.id);
-    if (!text || text.length !== Number(ctx.match[1]))
-      return void (await ctx.reply('Предпросмотр истёк.'));
+  bot.on('message', async (ctx, next) => {
+    if (!isAdmin(ctx) || ctx.message.text?.startsWith('/')) return next();
+    const draft = pendingBroadcasts.get(ctx.from.id);
+    if (!draft || draft.ready) return next();
+    const message = ctx.message;
+    if (!message.text && !message.photo && !message.video) {
+      await ctx.reply('Поддерживаются текст, фото и видео. Отправьте другое сообщение.');
+      return;
+    }
+    if (draft.ids.length && (!message.media_group_id || message.media_group_id !== draft.group)) {
+      await ctx.reply('Дождитесь предпросмотра текущего альбома.');
+      return;
+    }
+    if (draft.ids.length >= 10) return;
+    draft.ids.push(message.message_id);
+    draft.group = message.media_group_id;
+    if (draft.timer) clearTimeout(draft.timer);
+    draft.timer = setTimeout(() => {
+      void (async () => {
+        if (pendingBroadcasts.get(ctx.from.id)?.ids !== draft.ids) return;
+        draft.ready = true;
+        draft.ids.sort((a, b) => a - b);
+        try {
+          if (draft.ids.length === 1) await ctx.api.copyMessage(ctx.chat.id, ctx.chat.id, draft.ids[0]!);
+          else await ctx.api.copyMessages(ctx.chat.id, ctx.chat.id, draft.ids);
+          await ctx.reply('Отправить эту рассылку всем пользователям?', { reply_markup: new InlineKeyboard().text('✅ Да, отправить', 'broadcast:confirm').row().text('Отмена', 'broadcast:cancel') });
+        } catch (error) {
+          pendingBroadcasts.delete(ctx.from.id);
+          logger.warn({ event: 'broadcast.preview_failed', err: error });
+          await ctx.reply('Не удалось подготовить предпросмотр. Попробуйте снова.');
+        }
+      })();
+    }, message.media_group_id ? 1500 : 0);
+  });
+  bot.callbackQuery('broadcast:cancel', async (ctx) => {
+    if (!isAdmin(ctx) || sendingBroadcasts.has(ctx.from.id)) return;
+    const draft = pendingBroadcasts.get(ctx.from.id);
+    if (draft?.timer) clearTimeout(draft.timer);
     pendingBroadcasts.delete(ctx.from.id);
-    const result = await broadcast.send(text);
-    await admin.audit(ctx.from.id, 'broadcast.completed', undefined, result);
-    await ctx.reply(`Рассылка завершена: ${result.success} успешно, ${result.failed} ошибок.`);
+    await showAdminDashboard(ctx);
+  });
+  bot.callbackQuery('broadcast:confirm', async (ctx) => {
+    if (!isAdmin(ctx) || sendingBroadcasts.has(ctx.from.id)) return;
+    const draft = pendingBroadcasts.get(ctx.from.id);
+    if (!draft?.ready || !draft.ids.length) return void (await ctx.reply('Предпросмотр истёк. Откройте рассылку снова.'));
+    pendingBroadcasts.delete(ctx.from.id);
+    sendingBroadcasts.add(ctx.from.id);
+    await render(ctx, '📣 Рассылка началась. Результат пришлю отдельным сообщением.', new InlineKeyboard().text('← Админ-панель', 'adm:home'));
+    try {
+      await admin.audit(ctx.from.id, 'broadcast.started', undefined, { messages: draft.ids.length });
+      const result = await broadcast.send(draft.ids, ctx.chat!.id);
+      await admin.audit(ctx.from.id, 'broadcast.completed', undefined, result);
+      await ctx.reply(`Рассылка завершена: ${result.success} успешно, ${result.failed} ошибок.`);
+    } finally {
+      sendingBroadcasts.delete(ctx.from.id);
+    }
   });
   bot.callbackQuery('welcome', showWelcome);
   bot.callbackQuery('plans', showPlans);

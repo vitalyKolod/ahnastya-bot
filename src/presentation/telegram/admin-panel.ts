@@ -48,11 +48,13 @@ export function registerAdminPanel(
     const stats = await admin.stats();
     await render(
       ctx,
-      `<b>Привет, Настя! Это твоя админ-панель 👋</b>\n\nПользователей: ${stats.users}\nАктивных подписок: ${stats.active}\nПросрочено: ${stats.pastDue}\nИстекло: ${stats.expired}\nАвтопродление: ${stats.autoRenew}\nВыручка месяца: ${minorToRub(stats.revenueMinor)}\n\nРассылка: <code>/broadcast текст</code>`,
+      `<b>Привет, Настя! Это твоя админ-панель 👋</b>\n\nПользователей: ${stats.users}\nАктивных подписок: ${stats.active}\nПросрочено: ${stats.pastDue}\nИстекло: ${stats.expired}\nАвтопродление: ${stats.autoRenew}\nВыручка месяца: ${minorToRub(stats.revenueMinor)}`,
       new InlineKeyboard()
         .text('💳 Тарифы', 'adm:plans:0')
         .row()
         .text('👥 Участники', 'adm:members')
+        .row()
+        .text('📣 Рассылка', 'broadcast:new')
         .row()
         .text('← В меню бота', 'welcome'),
     );
