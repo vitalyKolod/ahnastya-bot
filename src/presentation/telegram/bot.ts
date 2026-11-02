@@ -25,6 +25,10 @@ const isNotModified = (error: unknown) =>
   error instanceof Error && error.message.toLowerCase().includes('message is not modified');
 export const aboutGalleryKeyboard = () =>
   new InlineKeyboard().text('❤️ ХОЧУ В КЛАДОВУЮ', 'plans').row().text('← НАЗАД', 'welcome');
+export const hasChannelAccess = (
+  sub: { status: string; graceUntil?: Date | null },
+  now = new Date(),
+) => sub.status === 'active' || (sub.status === 'past_due' && !!sub.graceUntil && sub.graceUntil > now);
 export async function acknowledgeCallback(
   ctx: Pick<Context, 'answerCallbackQuery'>,
   next: () => Promise<void>,
@@ -159,7 +163,8 @@ export function createBot(
       return;
     }
     const plan = plans.get(sub.planId);
-    const keyboard = new InlineKeyboard().text('📲 ПЕРЕЙТИ В КАНАЛ', 'invite').row();
+    const keyboard = new InlineKeyboard();
+    if (hasChannelAccess(sub)) keyboard.text('📲 ПЕРЕЙТИ В КАНАЛ', 'invite').row();
     if (sub.autoRenew && !sub.lifetime)
       keyboard.text('Отключить автосписания', 'cancel').row();
     addConsultation(keyboard, '💌 КОНСУЛЬТАЦИЯ');
@@ -504,8 +509,11 @@ export function createBot(
     render(ctx, ru.faq, new InlineKeyboard().text('← Назад', 'welcome')),
   );
   bot.callbackQuery('invite', async (ctx) => {
-    await channel.restoreEligibility(ctx.from.id);
+    const user = await identify(ctx);
+    const sub = user ? await subscriptions.getForUser(user._id) : null;
+    if (!sub || !hasChannelAccess(sub)) return showSubscription(ctx);
     const link = await channel.issueInvite(ctx.from.id);
+    await channel.restoreEligibility(ctx.from.id);
     if (!link) {
       await render(
         ctx,

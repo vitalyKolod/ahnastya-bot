@@ -1,5 +1,14 @@
 import { escapeHtml, minorToRub } from '../shared/utils.js';
 import type { Plan } from '../config/plans.js';
+import type { SubscriptionStatus } from '../domain/types.js';
+
+const subscriptionStatusLabels: Record<SubscriptionStatus, string> = {
+  pending: 'ожидает оплаты',
+  active: 'активна ☑️',
+  past_due: 'просрочена',
+  expired: 'истекла',
+  cancelled: 'отменена',
+};
 
 export const ru = {
   welcome: `<b>Привет! 🫶🏼</b>\n<b>Добро пожаловать в кладовую контента</b> <tg-emoji emoji-id="5334952914731436840">❤️</tg-emoji>\n\n<b>Это пространство для блогеров и креаторов любого уровня — от новичков до профи</b> <tg-emoji emoji-id="5357503593274418135">💌</tg-emoji>\n\n<b>Канал подойдёт тебе, если ты хочешь:</b>\n— Всегда иметь идеи для Reels, которые залетают и привлекают бренды\n— Вырастить свой блог и начать зарабатывать\n— Сотрудничать с брендами\n— Получать идеи и тренды каждую неделю\n— Учиться на моих туториалах и личном опыте\n— Получать мотивацию, поддержку и быть частью классного комьюнити\n\nУзнала себя? Тогда <b>кладовая точно для тебя</b> <tg-emoji emoji-id="5334681721906432448">❤️</tg-emoji>\n\nПолезные материалы выходят <b>до 5 раз в неделю</b> <tg-emoji emoji-id="5332277390624200444">❤️</tg-emoji>\n\n<b>Присоединяйся 👇🏼</b>`,
@@ -14,14 +23,14 @@ export const ru = {
   paymentReady: (plan: string, price: string) =>
     `<b>Всё готово к оплате</b>\n\n🖇️ Тариф: ${escapeHtml(plan)}\n💳 Сумма: ${price}\n\nНажмите кнопку ниже — откроется защищённая страница оплаты ЮKassa. После подтверждения платежа бот уведомит вас автоматически.`,
   subscription: (
-    status: string,
+    status: SubscriptionStatus,
     plan: string,
     date: string | null,
     price: string,
     renew: boolean,
     lifetime: boolean,
   ) =>
-    `🖇️ <b>Моя подписка</b>\n\nСтатус: ${status === 'active' ? 'активна ☑️' : status}\nТариф: ${escapeHtml(plan)}\n${lifetime ? 'Доступ: навсегда' : `\nОплачено до: ${date}\nСтоимость: ${price}\nАвтопродление: ${renew ? ' включено ☑️' : 'выключено — списаний больше не будет'}`}`,
+    `🖇️ <b>Моя подписка</b>\n\nСтатус: ${subscriptionStatusLabels[status]}\nТариф: ${escapeHtml(plan)}\n${lifetime ? 'Доступ: навсегда' : `\nОплачено до: ${date}\nСтоимость: ${price}\nАвтопродление: ${renew ? ' включено ☑️' : 'выключено — списаний больше не будет'}`}`,
   claimSuccess: (plan: string, date: string | null, renew: boolean, lifetime: boolean) =>
     `✅ <b>Оплата успешно прошла!</b>\n\n🖇️Тариф: ${escapeHtml(plan)}\n${lifetime ? '♾️ Доступ без ограничения срока' : `📅 Доступ до: ${date}\n🔄 Автопродление: ${renew ? 'включено' : 'выключено'}`}\n\nДобро пожаловать в кладовую контента ❤️`,
   paymentSuccess: (
