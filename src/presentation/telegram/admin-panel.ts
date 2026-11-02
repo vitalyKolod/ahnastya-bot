@@ -4,6 +4,7 @@ import { rubToMinor } from '../../config/plans.js';
 import { AdminService, type MemberGroup } from '../../application/admin.service.js';
 import { formatUserDate } from '../../shared/date.js';
 import { escapeHtml, minorToRub } from '../../shared/utils.js';
+import { MonthFocusModel } from '../../infrastructure/db/models.js';
 
 type Field = 'title' | 'amount' | 'duration';
 type Draft = {
@@ -22,6 +23,7 @@ export function registerAdminPanel(
   render: (ctx: Context, text: string, keyboard: InlineKeyboard) => Promise<void>,
 ) {
   const drafts = new Map<number, Draft>();
+  const focusDrafts = new Map<number, { text?: string; messageId: number }>();
   const allowed = (ctx: Context) =>
     Boolean(ctx.from && ctx.chat?.type === 'private' && env.ADMIN_IDS.includes(ctx.from.id));
   const price = (value: string) => {
@@ -45,6 +47,7 @@ export function registerAdminPanel(
   async function dashboard(ctx: Context) {
     if (!allowed(ctx)) return;
     drafts.delete(ctx.from!.id);
+    focusDrafts.delete(ctx.from!.id);
     const stats = await admin.stats();
     await render(
       ctx,
@@ -56,6 +59,8 @@ export function registerAdminPanel(
         .row()
         .text('📣 Рассылка', 'broadcast:new')
         .row()
+        .text('✨ Фокус месяца', 'adm:month_focus')
+        .row()
         .text('← В меню бота', 'welcome'),
     );
   }
@@ -63,6 +68,7 @@ export function registerAdminPanel(
   async function plansPage(ctx: Context, page: number) {
     if (!allowed(ctx)) return;
     drafts.delete(ctx.from!.id);
+    focusDrafts.delete(ctx.from!.id);
     const items = admin.listPlans();
     const maxPage = Math.max(0, Math.ceil(items.length / 5) - 1);
     const current = Math.min(page, maxPage);
@@ -145,6 +151,39 @@ export function registerAdminPanel(
   }
 
   bot.callbackQuery('adm:home', dashboard);
+  bot.callbackQuery('adm:month_focus', async (ctx) => {
+    if (!allowed(ctx)) return;
+    drafts.delete(ctx.from.id);
+    const current = await MonthFocusModel.findById('current').lean();
+    const messageId = ctx.callbackQuery.message?.message_id;
+    if (!messageId) return;
+    focusDrafts.set(ctx.from.id, { messageId });
+    await render(
+      ctx,
+      `<b>✨ Фокус месяца</b>\n\n${current ? `Сейчас опубликовано:\n${escapeHtml(current.text)}\n\n` : ''}Отправьте новый текст фокуса месяца.`,
+      new InlineKeyboard().text('Отмена', 'adm:home'),
+    );
+  });
+  bot.callbackQuery('adm:month_focus:edit', async (ctx) => {
+    if (!allowed(ctx)) return;
+    const draft = focusDrafts.get(ctx.from.id);
+    if (!draft?.text) return;
+    delete draft.text;
+    await render(ctx, '<b>✨ Фокус месяца</b>\n\nОтправьте исправленный текст.', new InlineKeyboard().text('Отмена', 'adm:home'));
+  });
+  bot.callbackQuery('adm:month_focus:confirm', async (ctx) => {
+    if (!allowed(ctx)) return;
+    const draft = focusDrafts.get(ctx.from.id);
+    if (!draft?.text) return;
+    await MonthFocusModel.findOneAndUpdate(
+      { _id: 'current' },
+      { $set: { text: draft.text } },
+      { upsert: true },
+    );
+    focusDrafts.delete(ctx.from.id);
+    await admin.audit(ctx.from.id, 'month_focus.published');
+    await render(ctx, '<b>✨ Фокус месяца опубликован</b>', new InlineKeyboard().text('← Админ-панель', 'adm:home'));
+  });
   bot.callbackQuery(/^adm:plans:(\d+)$/, (ctx) => plansPage(ctx, Number(ctx.match[1])));
   bot.callbackQuery(/^adm:plan:([a-z0-9_]{1,32})$/, (ctx) => planPage(ctx, ctx.match[1]!));
   bot.callbackQuery('adm:new', async (ctx) => {
@@ -163,6 +202,36 @@ export function registerAdminPanel(
   bot.on('message:text', async (ctx, next) => {
     if (!allowed(ctx)) return next();
     if (ctx.message.text.startsWith('/')) return next();
+    const focusDraft = focusDrafts.get(ctx.from.id);
+    if (focusDraft) {
+      if (focusDraft.text) {
+        await ctx.deleteMessage().catch(() => undefined);
+        return;
+      }
+      await ctx.deleteMessage().catch(() => undefined);
+      const value = ctx.message.text.trim();
+      const valid = value.length > 0 && value.length <= 3800;
+      if (valid) focusDraft.text = value;
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        focusDraft.messageId,
+        valid
+          ? `<b>✨ Фокус месяца — предпросмотр</b>\n\n${escapeHtml(value)}\n\nВсё правильно?`
+          : '<b>✨ Фокус месяца</b>\n\nОтправьте текст от 1 до 3800 символов.',
+        {
+          parse_mode: 'HTML',
+          reply_markup: valid
+            ? new InlineKeyboard()
+                .text('✅ Всё правильно', 'adm:month_focus:confirm')
+                .row()
+                .text('✏️ Изменить', 'adm:month_focus:edit')
+                .row()
+                .text('Отмена', 'adm:home')
+            : new InlineKeyboard().text('Отмена', 'adm:home'),
+        },
+      );
+      return;
+    }
     const draft = drafts.get(ctx.from.id);
     if (!draft || draft.step === 'confirm') return next();
     await ctx.deleteMessage().catch(() => undefined);

@@ -222,6 +222,13 @@ const auditSchema = new Schema(
   },
   { versionKey: false },
 );
+const monthFocusSchema = new Schema(
+  {
+    _id: { type: String, required: true },
+    text: { type: String, required: true },
+  },
+  opts,
+);
 export const UserModel = model('User', userSchema);
 export const PlanModel = model('Plan', planSchema);
 export const CheckoutModel = model('CheckoutSession', checkoutSchema);
@@ -234,5 +241,6 @@ export const RenewalModel = model('RenewalAttempt', renewalSchema);
 export const InviteModel = model('InviteLink', inviteSchema);
 export const LockModel = model('DistributedLock', lockSchema);
 export const AuditModel = model('AdminAudit', auditSchema);
+export const MonthFocusModel = model('MonthFocus', monthFocusSchema);
 export type UserRecord = InferSchemaType<typeof userSchema>;
 export type SubscriptionRecord = InferSchemaType<typeof subscriptionSchema>;

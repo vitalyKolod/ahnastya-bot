@@ -6,7 +6,7 @@ import type { Logger } from 'pino';
 import type { Env } from '../../config/env.js';
 import type { Plan, PlanId } from '../../config/plans.js';
 import { ru } from '../../content/ru.js';
-import { UserModel } from '../../infrastructure/db/models.js';
+import { MonthFocusModel, UserModel } from '../../infrastructure/db/models.js';
 import { escapeHtml, minorToRub } from '../../shared/utils.js';
 import { formatUserDate } from '../../shared/date.js';
 import type { ChannelAccessService } from '../../application/channel-access.service.js';
@@ -108,6 +108,7 @@ export function createBot(
       .text('🖇️ ПОДПИСКА', 'subscription')
       .text('🎬 КАК ЭТО ВЫГЛЯДИТ', 'how_it_looks')
       .row();
+    keyboard.text('✨ ФОКУС МЕСЯЦА', 'month_focus').row();
     if (ctxAdmin) keyboard.text('🛠 Админ-панель', 'adm:home').row();
     return addConsultation(keyboard);
   };
@@ -160,7 +161,7 @@ export function createBot(
     const plan = plans.get(sub.planId);
     const keyboard = new InlineKeyboard().text('📲 ПЕРЕЙТИ В КАНАЛ', 'invite').row();
     if (sub.autoRenew && !sub.lifetime)
-      keyboard.text('Отключить автопродление и отвязать карту', 'cancel').row();
+      keyboard.text('Отключить автосписания', 'cancel').row();
     addConsultation(keyboard, '💌 КОНСУЛЬТАЦИЯ');
     keyboard.text('← Назад', 'welcome');
     await render(
@@ -280,6 +281,8 @@ export function createBot(
             .text('📲 ПЕРЕЙТИ В КАНАЛ', 'invite')
             .row()
             .text('🖇️ МОЯ ПОДПИСКА', 'subscription')
+            .row()
+            .text('✨ ФОКУС МЕСЯЦА', 'month_focus')
             .row(),
         ),
       );
@@ -373,6 +376,14 @@ export function createBot(
     }
   });
   bot.callbackQuery('welcome', showWelcome);
+  bot.callbackQuery('month_focus', async (ctx) => {
+    const focus = await MonthFocusModel.findById('current').lean();
+    await render(
+      ctx,
+      `<b>✨ Фокус месяца</b>\n\n${focus ? escapeHtml(focus.text) : 'Пока не опубликован.'}`,
+      new InlineKeyboard().text('← В меню', 'welcome'),
+    );
+  });
   bot.callbackQuery('plans', showPlans);
   const docsDirectory = fileURLToPath(new URL('../../../public/docs/', import.meta.url));
   const documentFiles = readdirSync(docsDirectory);
