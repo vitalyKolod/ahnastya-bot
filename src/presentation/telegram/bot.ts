@@ -380,7 +380,7 @@ export function createBot(
     const focus = await MonthFocusModel.findById('current').lean();
     await render(
       ctx,
-      `<b>✨ Фокус месяца</b>\n\n${focus ? escapeHtml(focus.text) : 'Пока не опубликован.'}`,
+      `<b>✨ Фокус месяца</b>\n\n${focus ? escapeHtml(focus.text) : 'Пока что ещё не добавил.'}`,
       new InlineKeyboard().text('← В меню', 'welcome'),
     );
   });

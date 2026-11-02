@@ -158,10 +158,38 @@ export function registerAdminPanel(
     const messageId = ctx.callbackQuery.message?.message_id;
     if (!messageId) return;
     focusDrafts.set(ctx.from.id, { messageId });
+    const keyboard = new InlineKeyboard();
+    if (current) keyboard.text('🗑 Удалить фокус', 'adm:month_focus:delete').row();
+    keyboard.text('Отмена', 'adm:home');
     await render(
       ctx,
       `<b>✨ Фокус месяца</b>\n\n${current ? `Сейчас опубликовано:\n${escapeHtml(current.text)}\n\n` : ''}Отправьте новый текст фокуса месяца.`,
-      new InlineKeyboard().text('Отмена', 'adm:home'),
+      keyboard,
+    );
+  });
+  bot.callbackQuery('adm:month_focus:delete', async (ctx) => {
+    if (!allowed(ctx)) return;
+    await render(
+      ctx,
+      '<b>Удалить фокус месяца?</b>\n\nОпубликованный текст исчезнет из бота.',
+      new InlineKeyboard()
+        .text('🗑 Да, удалить', 'adm:month_focus:delete_confirm')
+        .row()
+        .text('Отмена', 'adm:month_focus'),
+    );
+  });
+  bot.callbackQuery('adm:month_focus:delete_confirm', async (ctx) => {
+    if (!allowed(ctx)) return;
+    await MonthFocusModel.findByIdAndDelete('current');
+    focusDrafts.delete(ctx.from.id);
+    await admin.audit(ctx.from.id, 'month_focus.deleted');
+    await render(
+      ctx,
+      '<b>Фокус месяца удалён</b>',
+      new InlineKeyboard()
+        .text('➕ Добавить новый', 'adm:month_focus')
+        .row()
+        .text('← Админ-панель', 'adm:home'),
     );
   });
   bot.callbackQuery('adm:month_focus:edit', async (ctx) => {
